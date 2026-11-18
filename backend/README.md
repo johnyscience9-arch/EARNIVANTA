@@ -28,6 +28,8 @@ uvicorn app.main:app --reload
 
 Open `http://127.0.0.1:8000/docs` for the interactive API reference.
 
+Run the backend integration tests from the `backend` directory with `pip install pytest httpx` followed by `pytest -q`. The test suite covers campaign moderation, task publishing, worker evidence, duplicate submissions, participant limits and review outcomes.
+
 ## Moderation flow
 
 1. An admin assigns the advertiser role to an approved account.
