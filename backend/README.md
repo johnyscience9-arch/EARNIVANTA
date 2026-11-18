@@ -60,3 +60,16 @@ Only approve campaigns and tasks that are lawful, accurately described, properly
 - SQLite is for local development/single-instance testing. Use managed PostgreSQL for a multi-instance production deployment and configure backups.
 - This milestone is not production-ready: rate limiting, email verification, password reset, refresh/revocation, audit logging, migrations, CSRF strategy, monitoring and automated tests remain required.
 - No real payments, wallet credits, identity document uploads, KYC, withdrawal payout or live chat are implemented. Do not collect NID/passport images or real money through this API yet.
+
+
+## Wallet ledger and manual withdrawals (development foundation)
+
+- Wallet balances are calculated from append-only ledger entries; existing entries are not edited or deleted by these API routes.
+- Amounts use integer minor units: for BDT, 100 minor units = ৳1.00. Example: `15000` means ৳150.00.
+- A user can view their own balance and transaction history at `GET /api/v1/wallet` and `GET /api/v1/wallet/transactions`.
+- Only admin/finance staff can record a manual credit or debit through `POST /api/v1/admin/wallet/adjust`. Every adjustment needs a unique reference and a clear description. This endpoint is for verified manual reconciliation, not arbitrary balance creation.
+- Members and maintenance staff can request a withdrawal through `POST /api/v1/withdrawals`. The requested amount is reserved immediately, so it cannot be requested twice while pending.
+- Users can view only their own withdrawal requests at `GET /api/v1/withdrawals`. Admin/finance staff review the queue at `GET /api/v1/admin/withdrawals`.
+- Finance/admin staff reject a request to release the reserved amount, or mark it paid with a payout transaction reference using `POST /api/v1/admin/withdrawals/{id}/process`.
+- This is a ledger and request workflow only. It does not connect to bKash, Nagad, a bank, or any payment gateway. A payout reference must be entered only after an actual transfer is independently verified. Do not store full payment account numbers or NID/passport data in this workflow.
+- No task reward is automatically credited yet: rewards must not be issued until advertiser funding/escrow and a verified reward-approval process exist. No real money should be collected or promised through this development API.
