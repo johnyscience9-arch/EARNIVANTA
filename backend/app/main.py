@@ -11,7 +11,7 @@ from fastapi import Depends, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, EmailStr, Field
-from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, UniqueConstraint, create_engine, func, select
+from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint, create_engine, func, select
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sessionmaker
 
 APP_ENV = os.getenv("APP_ENV", "development").strip().lower()
@@ -83,6 +83,7 @@ class Task(Base):
     currency: Mapped[str] = mapped_column(String(3), default="BDT")
     capacity: Mapped[int] = mapped_column(Integer, default=1)
     status: Mapped[str] = mapped_column(String(24), default="draft")
+    pinned: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
 
 
 class TaskSubmission(Base):
@@ -122,11 +123,20 @@ class DepositRequest(Base):
     method: Mapped[str] = mapped_column(String(24))
     payment_destination_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     payment_reference: Mapped[str] = mapped_column(String(120))
+    proof_image_data: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     status: Mapped[str] = mapped_column(String(24), default="pending_review")
     staff_note: Mapped[Optional[str]] = mapped_column(String(1000), nullable=True)
     reviewed_by: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id"), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
     reviewed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+
+class DailyHeadline(Base):
+    __tablename__ = "daily_headlines"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, default=1)
+    headline: Mapped[str] = mapped_column(String(180))
+    body: Mapped[str] = mapped_column(String(1000), default="")
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+
 
 class Withdrawal(Base):
     __tablename__ = "withdrawals"
@@ -159,6 +169,12 @@ from sqlalchemy import inspect, text
 if "payment_destination_id" not in {c["name"] for c in inspect(engine).get_columns("deposit_requests")}:
     with engine.begin() as conn:
         conn.execute(text("ALTER TABLE deposit_requests ADD COLUMN payment_destination_id INTEGER"))
+if "proof_image_data" not in {c["name"] for c in inspect(engine).get_columns("deposit_requests")}:
+    with engine.begin() as conn:
+        conn.execute(text("ALTER TABLE deposit_requests ADD COLUMN proof_image_data TEXT"))
+if "pinned" not in {c["name"] for c in inspect(engine).get_columns("tasks")}:
+    with engine.begin() as conn:
+        conn.execute(text("ALTER TABLE tasks ADD COLUMN pinned BOOLEAN NOT NULL DEFAULT FALSE"))
 
 
 def get_db():
@@ -300,6 +316,26 @@ def health():
     return {"ok": True, "service": "earnivanta-api", "version": "0.1.0"}
 
 
+@app.get("/api/v1/daily-headline")
+def get_daily_headline(db: Session = Depends(get_db)):
+    item = db.get(DailyHeadline, 1)
+    if not item:
+        return {"headline": "Welcome to Earnivanta", "body": "Check today’s verified opportunities and follow each task instruction carefully."}
+    return {"headline": item.headline, "body": item.body, "updated_at": item.updated_at.isoformat()}
+
+@app.put("/api/v1/admin/daily-headline")
+def set_daily_headline(data: DailyHeadlineInput, admin: User = Depends(require_roles("admin")), db: Session = Depends(get_db)):
+    item = db.get(DailyHeadline, 1)
+    if not item:
+        item = DailyHeadline(id=1, headline=data.headline.strip(), body=data.body.strip(), updated_at=datetime.now(timezone.utc))
+        db.add(item)
+    else:
+        item.headline = data.headline.strip()
+        item.body = data.body.strip()
+        item.updated_at = datetime.now(timezone.utc)
+    db.commit()
+    return {"headline": item.headline, "body": item.body, "updated_at": item.updated_at.isoformat()}
+
 @app.get("/api/v1/payment-destinations")
 def public_payment_destinations(db: Session = Depends(get_db)):
     items = db.scalars(select(PaymentDestination).where(PaymentDestination.active == True)
@@ -409,10 +445,24 @@ def create_task(campaign_id: int, data: TaskInput, user: User = Depends(require_
 @app.get("/api/v1/tasks")
 def list_tasks(user: User = Depends(current_user), db: Session = Depends(get_db)):
     rows = db.execute(select(Task, Campaign).join(Campaign, Task.campaign_id == Campaign.id)
-                      .where(Task.status == "published", Campaign.status == "active").order_by(Task.id.desc())).all()
+                      .where(Task.status == "published", Campaign.status == "active").order_by(Task.pinned.desc(), Task.id.desc())).all()
     return [{"id": t.id, "campaign_id": t.campaign_id, "title": t.title, "instructions": t.instructions,
-             "reward_minor": t.reward_minor, "currency": t.currency, "capacity": t.capacity} for t, _ in rows]
+             "reward_minor": t.reward_minor, "currency": t.currency, "capacity": t.capacity, "pinned": t.pinned} for t, _ in rows]
 
+
+@app.get("/api/v1/admin/tasks")
+def admin_list_tasks(admin: User = Depends(require_roles("admin")), db: Session = Depends(get_db)):
+    rows = db.scalars(select(Task).order_by(Task.id.desc())).all()
+    return [{"id": t.id, "title": t.title, "status": t.status, "pinned": t.pinned} for t in rows]
+
+@app.patch("/api/v1/admin/tasks/{task_id}/pin")
+def pin_task(task_id: int, data: TaskPinInput, admin: User = Depends(require_roles("admin")), db: Session = Depends(get_db)):
+    task = db.get(Task, task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+    task.pinned = data.pinned
+    db.commit()
+    return {"id": task.id, "pinned": task.pinned}
 
 @app.post("/api/v1/admin/users/{user_id}/role")
 def change_role(user_id: int, role: str, admin: User = Depends(require_roles("admin")), db: Session = Depends(get_db)):
@@ -609,6 +659,14 @@ class DepositInput(BaseModel):
     method: str = Field(min_length=2, max_length=24)
     payment_destination_id: Optional[int] = Field(default=None, gt=0)
     payment_reference: str = Field(min_length=6, max_length=120)
+    proof_image_data: Optional[str] = Field(default=None, max_length=1_500_000)
+
+class DailyHeadlineInput(BaseModel):
+    headline: str = Field(min_length=3, max_length=180)
+    body: str = Field(default="", max_length=1000)
+
+class TaskPinInput(BaseModel):
+    pinned: bool
 
 class DepositReviewInput(BaseModel):
     decision: str = Field(pattern="^(verify|reject)$")
@@ -627,7 +685,9 @@ def request_deposit(data: DepositInput, advertiser: User = Depends(require_roles
         raise HTTPException(status_code=400, detail="Payment method does not match selected destination")
     if db.scalar(select(DepositRequest.id).where(DepositRequest.payment_reference == ref)):
         raise HTTPException(status_code=409, detail="This payment reference has already been submitted")
-    item = DepositRequest(advertiser_id=advertiser.id, amount_minor=data.amount_minor, method=data.method, payment_destination_id=destination.id if destination else None, payment_reference=ref)
+    if data.proof_image_data and not data.proof_image_data.startswith(("data:image/jpeg;base64,", "data:image/png;base64,", "data:image/webp;base64,")):
+        raise HTTPException(status_code=422, detail="Payment proof must be a JPEG, PNG, or WebP image")
+    item = DepositRequest(advertiser_id=advertiser.id, amount_minor=data.amount_minor, method=data.method, payment_destination_id=destination.id if destination else None, payment_reference=ref, proof_image_data=data.proof_image_data)
     db.add(item)
     db.commit()
     db.refresh(item)
@@ -636,12 +696,12 @@ def request_deposit(data: DepositInput, advertiser: User = Depends(require_roles
 @app.get("/api/v1/deposits")
 def my_deposits(advertiser: User = Depends(require_roles("advertiser", "admin")), db: Session = Depends(get_db)):
     rows = db.scalars(select(DepositRequest).where(DepositRequest.advertiser_id == advertiser.id).order_by(DepositRequest.id.desc())).all()
-    return [{"id": d.id, "amount_minor": d.amount_minor, "method": d.method, "payment_destination_id": d.payment_destination_id, "payment_reference": d.payment_reference, "status": d.status, "staff_note": d.staff_note} for d in rows]
+    return [{"id": d.id, "amount_minor": d.amount_minor, "method": d.method, "payment_destination_id": d.payment_destination_id, "payment_reference": d.payment_reference, "proof_attached": bool(d.proof_image_data), "status": d.status, "staff_note": d.staff_note} for d in rows]
 
 @app.get("/api/v1/admin/deposits")
 def deposit_queue(staff: User = Depends(require_roles("admin", "finance")), db: Session = Depends(get_db)):
     rows = db.execute(select(DepositRequest, User).join(User, DepositRequest.advertiser_id == User.id).where(DepositRequest.status == "pending_review").order_by(DepositRequest.id.asc())).all()
-    return [{"id": d.id, "advertiser_id": u.id, "advertiser_name": u.display_name, "amount_minor": d.amount_minor, "method": d.method, "payment_destination_id": d.payment_destination_id, "payment_reference": d.payment_reference} for d, u in rows]
+    return [{"id": d.id, "advertiser_id": u.id, "advertiser_name": u.display_name, "amount_minor": d.amount_minor, "method": d.method, "payment_destination_id": d.payment_destination_id, "payment_reference": d.payment_reference, "proof_image_data": d.proof_image_data} for d, u in rows]
 
 @app.post("/api/v1/admin/deposits/{deposit_id}/review")
 def review_deposit(deposit_id: int, data: DepositReviewInput, staff: User = Depends(require_roles("admin", "finance")), db: Session = Depends(get_db)):
