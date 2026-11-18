@@ -41,3 +41,7 @@ The project is designed for a free-first deployment. Hosting providers and free-
 ## Local preview
 
 Open `index.html` in a modern browser. This first version uses no external libraries or paid APIs.
+
+## Architecture contract
+
+The detailed platform architecture, role permissions, data model, workflow states, privacy requirements and API boundary are documented in [`docs/PLATFORM_BLUEPRINT.md`](docs/PLATFORM_BLUEPRINT.md). This is the implementation contract for subsequent backend and client work.
