@@ -513,6 +513,8 @@ def wallet_transactions(user: User = Depends(current_user), db: Session = Depend
 
 @app.post("/api/v1/withdrawals", status_code=201)
 def request_withdrawal(data: WithdrawalInput, user: User = Depends(require_roles("member", "maintenance")), db: Session = Depends(get_db)):
+    # Serialize balance checks on databases that support row-level locks (e.g. PostgreSQL).
+    db.scalar(select(User).where(User.id == user.id).with_for_update())
     totals = wallet_totals(db, user.id)
     if totals["available_minor"] < data.amount_minor:
         raise HTTPException(status_code=409, detail="Insufficient available balance")
@@ -538,7 +540,7 @@ def my_withdrawals(user: User = Depends(current_user), db: Session = Depends(get
 
 @app.post("/api/v1/admin/wallet/adjust")
 def adjust_wallet(data: WalletAdjustmentInput, staff: User = Depends(require_roles("admin", "finance")), db: Session = Depends(get_db)):
-    target = db.get(User, data.user_id)
+    target = db.scalar(select(User).where(User.id == data.user_id).with_for_update())
     if not target:
         raise HTTPException(status_code=404, detail="User not found")
     if db.scalar(select(WalletEntry.id).where(WalletEntry.reference == data.reference)):
