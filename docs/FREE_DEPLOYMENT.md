@@ -1,52 +1,47 @@
-# Earnivanta — free-first deployment checklist
+# Earnivanta — free-first deployment
 
-This repository can be developed with free tools. A GitHub repository and GitHub Pages do not provide a running Python API or a persistent production database.
+## What is already online
 
-## 1. Publish the static website with GitHub Pages
+The static frontend is published through GitHub Pages:
+- https://johnyscience9-arch.github.io/EARNIVANTA/
+- https://johnyscience9-arch.github.io/EARNIVANTA/portal.html
 
-1. Open the repository: https://github.com/johnyscience9-arch/EARNIVANTA
-2. Open **Settings → Pages**.
-3. Under **Build and deployment → Source**, choose **GitHub Actions** from the dropdown. Do not click the **GitHub Pages Jekyll** or **Static HTML** cards below; those are starter workflow templates, not the Source selector.
-4. GitHub normally applies the Source selection immediately. If no Save button appears, do not enter a custom domain and do not create a starter workflow. Confirm that the Source field itself displays **GitHub Actions**.
-5. Open **Actions → Deploy Earnivanta website** and confirm the newest run succeeds.
-6. The expected project URL is https://johnyscience9-arch.github.io/EARNIVANTA/ after GitHub reports a successful deployment.
+The FastAPI backend is a separate service. It is not live until a hosting provider and persistent PostgreSQL database are connected.
 
-The previous Pages workflow stopped at **Configure Pages** because GitHub returned “Get Pages site failed / Not Found”. This means the repository's Pages site has not yet been provisioned. The current connected GitHub actions available to me can read and commit repository files, but do not expose the repository Pages-settings API or list/dispatch workflow runs. Therefore I cannot honestly claim I have changed that repository setting or verified a new deployment. The account owner must confirm the Source dropdown displays **GitHub Actions**; once it does, a push or manual workflow run can provision/deploy the site.
+## Deploy the API with the included blueprint
 
-## 2. The API is a separate service
+1. Create a free account with a compatible Python hosting provider and connect the GitHub repository `johnyscience9-arch/EARNIVANTA`.
+2. Select the repository blueprint file `render.yaml` (Render Blueprint flow).
+3. The blueprint creates the API web service. Add a persistent PostgreSQL connection URL as `DATABASE_URL`; use a managed database provider such as Supabase PostgreSQL and copy its connection string privately.
+4. Keep the generated `TOKEN_SECRET`. Do not paste it into GitHub files, public chat, or the frontend.
+5. Set `ADMIN_EMAIL` and a strong `ADMIN_PASSWORD` only for the first administrator bootstrap. After the first successful admin login, remove `ADMIN_PASSWORD` from the host environment and redeploy.
+6. Keep `APP_ENV=production`, `CORS_ORIGINS=https://johnyscience9-arch.github.io`, and `TOKEN_TTL_HOURS=24`.
+7. Wait for the service health check to pass at `https://YOUR-API-HOST/api/v1/health`.
+8. Open the portal, enter the API HTTPS base URL (without a trailing slash), and save the connection in that browser.
 
-GitHub Pages only serves static files. It cannot run FastAPI, authenticate users, store task evidence, or process wallet/deposit/withdrawal requests.
+Free hosting/database limits and retention policies change. Check the provider's current terms and never assume a free plan is permanent or suitable for financial records. A sleeping free web service may take time to wake up. Use a persistent PostgreSQL database; do not use SQLite on an ephemeral host disk.
 
-For a free-first pilot:
-- Deploy the FastAPI app in `backend/` to a provider that currently offers a free Python web-service tier.
-- Use a managed PostgreSQL database for any hosted multi-user test. Do not use the local SQLite file on an ephemeral web-service filesystem as production storage.
-- Free-tier quotas, sleep/hibernation, database retention and pricing can change. Check the provider's current limits before choosing it; never assume a free tier is permanent or suitable for financial records.
-- Set the API start command to `uvicorn app.main:app --host 0.0.0.0 --port $PORT` with the service root set to `backend` (or adapt the command to the provider).
-- Configure these environment variables in the backend host:
-  - `DATABASE_URL`: provider's PostgreSQL connection URL.
-  - `TOKEN_SECRET`: a long, random secret generated privately; never commit it.
-  - `CORS_ORIGINS`: the exact deployed website origin, for example `https://johnyscience9-arch.github.io` (no trailing slash).
-  - `ADMIN_EMAIL` and `ADMIN_PASSWORD`: only for first-admin bootstrap; remove the bootstrap password after creating the admin.
-- Test `GET /api/v1/health` and `/docs` after deployment.
-- Put the backend's HTTPS base URL into the Control Desk API URL field.
+## Production safety gates
 
-## 3. Safe test order
+The API now refuses to start in production if:
+- `TOKEN_SECRET` is missing or shorter than 32 characters;
+- SQLite is selected;
+- `CORS_ORIGINS` is wildcard, missing, or not HTTPS.
 
-1. Publish the static site.
-2. Deploy the API and persistent database.
-3. Confirm health endpoint and CORS from the published site.
-4. Create a test account and grant admin/finance role only through the controlled admin process.
-5. Test deposits, campaign escrow, task review, wallet ledger and withdrawals with test records only.
-6. Verify backups, access controls, audit logging, rate limits, email verification, password reset, migrations and incident procedures before any real users or funds.
+The deployment still requires an independent security and legal review before real users or money. Rate limiting, email verification, password reset, token revocation, audit logs, formal database migrations, monitoring, backup/restore drills, support/dispute processes, real payment reconciliation and payout operations are not yet implemented. There is no bKash/Nagad gateway or automatic payment verification. Do not accept real deposits, joining fees, identity documents or promise earnings through this development system.
 
-## 4. Do not use real money or identity documents yet
+## Local development
 
-This is an evolving development foundation, not a production financial platform. The current API does not integrate with bKash/Nagad, automatically verify transfers, or provide production-grade KYC, NID/passport image storage, live chat or payout automation. Do not collect real deposits, promise earnings, request identity-document images, or pay workers through this test system until security, privacy/legal review, reconciliation, backups and operational controls are independently completed.
+From the repository's `backend` folder:
+```bash
+python -m venv .venv
+# Windows: .venv\\Scripts\\activate
+# macOS/Linux: source .venv/bin/activate
+pip install -r requirements.txt
+copy .env.example .env
+uvicorn app.main:app --reload
+```
 
-## 5. Free-tool policy
+## Campaign integrity
 
-- Keep source code and issue tracking in GitHub.
-- Use GitHub Actions for automated checks and static-site deployment.
-- Prefer free local development tools and free tiers only while their current terms fit the pilot.
-- Do not add a paid AI API, paid theme, purchased template, or paid design module without explicit approval.
-- Keep Earnivanta's original bespoke visual identity; do not replace it with a generic dashboard/template.
+Only support lawful work with real value: voluntary research, honest product testing, disclosed content, consent-based leads and genuine feedback. Do not publish fake likes, follows, views, subscribers, fabricated reviews or deceptive platform manipulation.
