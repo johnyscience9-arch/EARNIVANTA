@@ -165,6 +165,14 @@ class PaymentDestination(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
 
+class DailyHeadlineInput(BaseModel):
+    headline: str = Field(min_length=3, max_length=180)
+    body: str = Field(default="", max_length=1000)
+
+class TaskPinInput(BaseModel):
+    pinned: bool
+
+
 Base.metadata.create_all(bind=engine)
 from sqlalchemy import inspect, text
 if "payment_destination_id" not in {c["name"] for c in inspect(engine).get_columns("deposit_requests")}:
