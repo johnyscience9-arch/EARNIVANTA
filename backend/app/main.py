@@ -119,6 +119,19 @@ class Withdrawal(Base):
     processed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
+class PaymentDestination(Base):
+    __tablename__ = "payment_destinations"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    method: Mapped[str] = mapped_column(String(24), index=True)
+    label: Mapped[str] = mapped_column(String(80))
+    account_type: Mapped[str] = mapped_column(String(24), default="Personal")
+    account_number: Mapped[str] = mapped_column(String(40))
+    instructions: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
+    active: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
+    sort_order: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+
+
 Base.metadata.create_all(bind=engine)
 
 
@@ -225,6 +238,32 @@ class TaskInput(BaseModel):
     capacity: int = Field(ge=1, le=100_000)
 
 
+class PaymentDestinationInput(BaseModel):
+    method: str = Field(min_length=2, max_length=24)
+    label: str = Field(min_length=2, max_length=80)
+    account_type: str = Field(default="Personal", min_length=2, max_length=24)
+    account_number: str = Field(min_length=5, max_length=40)
+    instructions: Optional[str] = Field(default=None, max_length=500)
+    active: bool = True
+    sort_order: int = Field(default=0, ge=0, le=10000)
+
+
+class PaymentDestinationUpdate(BaseModel):
+    method: Optional[str] = Field(default=None, min_length=2, max_length=24)
+    label: Optional[str] = Field(default=None, min_length=2, max_length=80)
+    account_type: Optional[str] = Field(default=None, min_length=2, max_length=24)
+    account_number: Optional[str] = Field(default=None, min_length=5, max_length=40)
+    instructions: Optional[str] = Field(default=None, max_length=500)
+    active: Optional[bool] = None
+    sort_order: Optional[int] = Field(default=None, ge=0, le=10000)
+
+
+def payment_destination_public(item: PaymentDestination):
+    return {"id": item.id, "method": item.method, "label": item.label,
+            "account_type": item.account_type, "account_number": item.account_number,
+            "instructions": item.instructions, "active": item.active, "sort_order": item.sort_order}
+
+
 app = FastAPI(title="Earnivanta API", version="0.1.0", description="Initial authentication and campaign foundation.")
 origins = [x.strip() for x in os.getenv("CORS_ORIGINS", "http://localhost:5500,http://127.0.0.1:5500").split(",") if x.strip()]
 app.add_middleware(CORSMiddleware, allow_origins=origins, allow_credentials=True,
@@ -234,6 +273,50 @@ app.add_middleware(CORSMiddleware, allow_origins=origins, allow_credentials=True
 @app.get("/api/v1/health")
 def health():
     return {"ok": True, "service": "earnivanta-api", "version": "0.1.0"}
+
+
+@app.get("/api/v1/payment-destinations")
+def public_payment_destinations(db: Session = Depends(get_db)):
+    items = db.scalars(select(PaymentDestination).where(PaymentDestination.active == True)
+                       .order_by(PaymentDestination.sort_order.asc(), PaymentDestination.id.asc())).all()
+    return [payment_destination_public(item) for item in items]
+
+
+@app.get("/api/v1/admin/payment-destinations")
+def admin_payment_destinations(admin: User = Depends(require_roles("admin")), db: Session = Depends(get_db)):
+    items = db.scalars(select(PaymentDestination).order_by(PaymentDestination.id.desc())).all()
+    return [payment_destination_public(item) for item in items]
+
+
+@app.post("/api/v1/admin/payment-destinations", status_code=201)
+def add_payment_destination(data: PaymentDestinationInput, admin: User = Depends(require_roles("admin")), db: Session = Depends(get_db)):
+    item = PaymentDestination(**data.model_dump())
+    db.add(item)
+    db.commit()
+    db.refresh(item)
+    return payment_destination_public(item)
+
+
+@app.patch("/api/v1/admin/payment-destinations/{destination_id}")
+def edit_payment_destination(destination_id: int, data: PaymentDestinationUpdate, admin: User = Depends(require_roles("admin")), db: Session = Depends(get_db)):
+    item = db.get(PaymentDestination, destination_id)
+    if not item:
+        raise HTTPException(status_code=404, detail="Payment destination not found")
+    for key, value in data.model_dump(exclude_unset=True).items():
+        setattr(item, key, value)
+    db.commit()
+    db.refresh(item)
+    return payment_destination_public(item)
+
+
+@app.delete("/api/v1/admin/payment-destinations/{destination_id}")
+def disable_payment_destination(destination_id: int, admin: User = Depends(require_roles("admin")), db: Session = Depends(get_db)):
+    item = db.get(PaymentDestination, destination_id)
+    if not item:
+        raise HTTPException(status_code=404, detail="Payment destination not found")
+    item.active = False
+    db.commit()
+    return {"id": item.id, "active": False, "message": "Payment destination disabled"}
 
 
 @app.post("/api/v1/auth/register", status_code=201)
