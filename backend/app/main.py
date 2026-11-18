@@ -406,6 +406,13 @@ def change_role(user_id: int, role: str, admin: User = Depends(require_roles("ad
     db.commit()
     return {"user_id": target.id, "role": target.role, "changed_by": admin.id}
 
+@app.get("/api/v1/admin/users")
+def list_users(admin: User = Depends(require_roles("admin")), db: Session = Depends(get_db)):
+    users = db.scalars(select(User).order_by(User.id.asc())).all()
+    return [{"id": u.id, "email": u.email, "display_name": u.display_name,
+             "role": u.role, "active": u.active,
+             "created_at": u.created_at.isoformat()} for u in users]
+
 
 admin_email = os.getenv("ADMIN_EMAIL", "").strip().lower()
 admin_password = os.getenv("ADMIN_PASSWORD", "")
