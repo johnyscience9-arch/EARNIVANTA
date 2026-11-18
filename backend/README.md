@@ -73,3 +73,10 @@ Only approve campaigns and tasks that are lawful, accurately described, properly
 - Finance/admin staff reject a request to release the reserved amount, or mark it paid with a payout transaction reference using `POST /api/v1/admin/withdrawals/{id}/process`.
 - This is a ledger and request workflow only. It does not connect to bKash, Nagad, a bank, or any payment gateway. A payout reference must be entered only after an actual transfer is independently verified. Do not store full payment account numbers or NID/passport data in this workflow.
 - No task reward is automatically credited yet: rewards must not be issued until advertiser funding/escrow and a verified reward-approval process exist. No real money should be collected or promised through this development API.
+
+## Advertiser deposits, campaign escrow and rewards
+
+- Advertisers submit deposit claims at `POST /api/v1/deposits`; claims remain pending until admin/finance independently verifies the transaction at `POST /api/v1/admin/deposits/{id}/review`. Duplicate payment references are rejected. A screenshot alone is not verification.
+- Verified deposits credit the advertiser wallet. Advertisers reserve verified wallet funds for a campaign at `POST /api/v1/campaigns/{id}/fund`; its budget is visible to its owner and admin/reviewer at `GET /api/v1/campaigns/{id}/budget`.
+- When staff approves worker evidence, the task reward is credited exactly once from that campaign's escrow. If escrow is insufficient, approval is blocked and the submission remains pending.
+- This is a development ledger, not a payment gateway. It does not verify bKash/Nagad automatically. Do not collect real funds until production security, legal review, reconciliation controls, database migrations, audit logs and operational procedures are completed.
