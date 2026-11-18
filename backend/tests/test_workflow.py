@@ -19,7 +19,7 @@ def client():
 
     with TestingSession() as db:
         db.add(User(
-            email="admin@example.test",
+            email="admin@example.com",
             display_name="Test Admin",
             password_hash=hash_password("test-admin-password"),
             role="admin",
@@ -53,15 +53,15 @@ def register(client, email, name):
 
 def test_campaign_task_and_worker_submission_lifecycle(client):
     admin_login = client.post("/api/v1/auth/login", json={
-        "email": "admin@example.test",
+        "email": "admin@example.com",
         "password": "test-admin-password",
     })
     assert admin_login.status_code == 200
     admin_headers = {"Authorization": f"Bearer {admin_login.json()['access_token']}"}
 
-    advertiser_token = register(client, "advertiser@example.test", "Advertiser")
+    advertiser_token = register(client, "advertiser@example.com", "Advertiser")
     advertiser_headers = {"Authorization": f"Bearer {advertiser_token}"}
-    worker_token = register(client, "worker@example.test", "Worker")
+    worker_token = register(client, "worker@example.com", "Worker")
     worker_headers = {"Authorization": f"Bearer {worker_token}"}
 
     role_response = client.post(
@@ -135,7 +135,7 @@ def test_campaign_task_and_worker_submission_lifecycle(client):
     )
     assert duplicate.status_code == 409
 
-    second_worker_token = register(client, "second-worker@example.test", "Second Worker")
+    second_worker_token = register(client, "second-worker@example.com", "Second Worker")
     second_worker_headers = {"Authorization": f"Bearer {second_worker_token}"}
     capacity_check = client.post(
         f"/api/v1/tasks/{task_id}/submissions",
@@ -165,12 +165,12 @@ def test_campaign_task_and_worker_submission_lifecycle(client):
 
 def test_wallet_ledger_and_manual_withdrawal_lifecycle(client):
     admin_login = client.post("/api/v1/auth/login", json={
-        "email": "admin@example.test",
+        "email": "admin@example.com",
         "password": "test-admin-password",
     })
     assert admin_login.status_code == 200
     admin_headers = {"Authorization": f"Bearer {admin_login.json()['access_token']}"}
-    worker_token = register(client, "wallet-worker@example.test", "Wallet Worker")
+    worker_token = register(client, "wallet-worker@example.com", "Wallet Worker")
     worker_headers = {"Authorization": f"Bearer {worker_token}"}
 
     initial = client.get("/api/v1/wallet", headers=worker_headers)
@@ -249,11 +249,11 @@ def test_wallet_ledger_and_manual_withdrawal_lifecycle(client):
 
 
 def test_verified_deposit_campaign_escrow_and_reward_credit(client):
-    admin_login = client.post("/api/v1/auth/login", json={"email": "admin@example.test", "password": "test-admin-password"})
+    admin_login = client.post("/api/v1/auth/login", json={"email": "admin@example.com", "password": "test-admin-password"})
     admin_headers = {"Authorization": f"Bearer {admin_login.json()['access_token']}"}
-    advertiser_token = register(client, "escrow-advertiser@example.test", "Escrow Advertiser")
+    advertiser_token = register(client, "escrow-advertiser@example.com", "Escrow Advertiser")
     advertiser_headers = {"Authorization": f"Bearer {advertiser_token}"}
-    worker_token = register(client, "escrow-worker@example.test", "Escrow Worker")
+    worker_token = register(client, "escrow-worker@example.com", "Escrow Worker")
     worker_headers = {"Authorization": f"Bearer {worker_token}"}
     assert client.post("/api/v1/admin/users/2/role?role=advertiser", headers=admin_headers).status_code == 200
     deposit = client.post("/api/v1/deposits", headers=advertiser_headers, json={
