@@ -1,46 +1,59 @@
-# Earnivanta — free-first deployment
+# Earnivanta — deployment and operations
 
-## What is already online
+## Live deployment
 
-The static frontend is published through GitHub Pages:
-- https://johnyscience9-arch.github.io/EARNIVANTA/
-- https://johnyscience9-arch.github.io/EARNIVANTA/portal.html
+The current deployment is online:
 
-The FastAPI backend is a separate service. It is not live until a hosting provider and persistent PostgreSQL database are connected.
+- Website: https://johnyscience9-arch.github.io/EARNIVANTA/
+- Member portal: https://johnyscience9-arch.github.io/EARNIVANTA/portal.html
+- API: https://earnivanta-api-ozq5.onrender.com
+- Health endpoint: https://earnivanta-api-ozq5.onrender.com/api/v1/health
+- Render dashboard: https://dashboard.render.com/web/srv-dbv0v6ek1f9s73b33g4g
+- GitHub repository: https://github.com/johnyscience9-arch/EARNIVANTA
 
-## Deploy the API with the included blueprint
+The Render service is configured from the repository's `backend` directory, using Python, `pip install -r requirements.txt`, and `uvicorn app.main:app --host 0.0.0.0 --port $PORT`. Its health-check path is `/api/v1/health`. The live service uses the Supabase PostgreSQL connection configured privately in Render. Never put database passwords, token secrets or administrator passwords in this repository or in public messages.
 
-1. Create a free account with a compatible Python hosting provider and connect the GitHub repository `johnyscience9-arch/EARNIVANTA`.
-2. Select the repository blueprint file `render.yaml` (Render Blueprint flow).
-3. The blueprint creates the API web service. Add a persistent PostgreSQL connection URL as `DATABASE_URL`; use a managed database provider such as Supabase PostgreSQL and copy its connection string privately.
-4. Keep the generated `TOKEN_SECRET`. Do not paste it into GitHub files, public chat, or the frontend.
-5. Set `ADMIN_EMAIL` and a strong `ADMIN_PASSWORD` only for the first administrator bootstrap. After the first successful admin login, remove `ADMIN_PASSWORD` from the host environment and redeploy.
-6. Keep `APP_ENV=production`, `CORS_ORIGINS=https://johnyscience9-arch.github.io`, and `TOKEN_TTL_HOURS=24`.
-7. Wait for the service health check to pass at `https://YOUR-API-HOST/api/v1/health`.
-8. Open the portal, enter the API HTTPS base URL (without a trailing slash), and save the connection in that browser.
+The GitHub Pages workflow publishes the repository root. The portal, finance console, payment settings and add-funds pages now default to the live API base URL.
 
-Free hosting/database limits and retention policies change. Check the provider's current terms and never assume a free plan is permanent or suitable for financial records. A sleeping free web service may take time to wake up. Use a persistent PostgreSQL database; do not use SQLite on an ephemeral host disk.
+## Verified deployment checks
 
-## Production safety gates
+At the latest release check:
+- Render's latest deployment status was `live`.
+- Render logs showed repeated successful `GET /api/v1/health` responses with `200 OK`.
+- Supabase project status was `ACTIVE_HEALTHY`.
+- GitHub Pages deployment workflow completed successfully for the latest frontend commit.
+- Frontend checks completed successfully, including Node.js syntax validation of inline scripts in all five HTML pages.
+- Backend validation and integration tests passed on the latest backend commit.
 
-The API now refuses to start in production if:
-- `TOKEN_SECRET` is missing or shorter than 32 characters;
-- SQLite is selected;
-- `CORS_ORIGINS` is wildcard, missing, or not HTTPS.
+These checks establish that the hosting and health endpoint are operating. They do not prove every user journey, payment or administrative operation has passed a live end-to-end test.
 
-The deployment still requires an independent security and legal review before real users or money. Rate limiting, email verification, password reset, token revocation, audit logs, formal database migrations, monitoring, backup/restore drills, support/dispute processes, real payment reconciliation and payout operations are not yet implemented. There is no bKash/Nagad gateway or automatic payment verification. Do not accept real deposits, joining fees, identity documents or promise earnings through this development system.
+## Runtime environment
 
-## Local development
+The Render service should retain:
+- `APP_ENV=production`
+- `DATABASE_URL` — Supabase PostgreSQL Session Pooler URL, with URL-encoded password characters where required.
+- `TOKEN_SECRET` — generated secret of at least 32 characters.
+- `TOKEN_TTL_HOURS=24`
+- `CORS_ORIGINS=https://johnyscience9-arch.github.io`
+- `ADMIN_EMAIL` and `ADMIN_PASSWORD` only for initial administrator bootstrap.
 
-From the repository's `backend` folder:
-```bash
-python -m venv .venv
-# Windows: .venv\\Scripts\\activate
-# macOS/Linux: source .venv/bin/activate
-pip install -r requirements.txt
-copy .env.example .env
-uvicorn app.main:app --reload
-```
+The backend creates the initial administrator only when both admin variables are present and the email does not already exist. After confirming the first administrator can sign in, remove `ADMIN_PASSWORD` from the Render environment and redeploy. Do not share credentials in chat or commit them.
+
+## Current product scope
+
+Implemented workflows include account registration/login, role-based portal views, campaign and task moderation, worker evidence submission, wallet ledger, manual deposit claims, staff verification, campaign escrow, funded task reward credit, withdrawal holds/manual processing, and payment destination administration.
+
+## Production safety gates still outstanding
+
+This project remains a deployed prototype and must not be represented as a fully audited or production-ready financial service. Before accepting real users or money, complete:
+- Email verification and password reset delivery.
+- Rate limiting, token revocation and audit logging.
+- Formal database migrations and tested backup/restore procedures.
+- Security, privacy and legal review.
+- Independent reconciliation of actual bKash/Nagad/bank payments; no automatic gateway or automatic payment verification is connected.
+- Dispute/refund process, support operations and end-to-end tests for all roles and money flows.
+
+Do not collect joining fees, deposits or identity documents and do not promise earnings through the prototype. Payment destination details are instructions for manual transfers, not proof of payment. Staff must independently verify a transaction before approving a deposit. A screenshot alone is not verification.
 
 ## Campaign integrity
 
