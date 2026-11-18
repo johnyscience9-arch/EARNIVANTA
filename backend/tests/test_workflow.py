@@ -305,3 +305,30 @@ def test_verified_deposit_campaign_escrow_and_reward_credit(client):
     assert budget.json()["spent_minor"] == 5000
     repeated = client.post(f"/api/v1/admin/submissions/{submission_id}/review", headers=admin_headers, json={"decision": "approve"})
     assert repeated.status_code == 409
+
+
+def test_admin_user_directory_and_role_management(client):
+    admin_login = client.post("/api/v1/auth/login", json={
+        "email": "admin@example.com", "password": "test-admin-password"
+    })
+    admin_headers = {"Authorization": f"Bearer {admin_login.json()['access_token']}"}
+    member_token = register(client, "role-target@example.com", "Role Target")
+    member_headers = {"Authorization": f"Bearer {member_token}"}
+
+    denied = client.get("/api/v1/admin/users", headers=member_headers)
+    assert denied.status_code == 403
+
+    listed = client.get("/api/v1/admin/users", headers=admin_headers)
+    assert listed.status_code == 200
+    target = next(item for item in listed.json() if item["email"] == "role-target@example.com")
+    assert target["role"] == "member"
+    assert "password_hash" not in target
+
+    changed = client.post(
+        f"/api/v1/admin/users/{target['id']}/role?role=maintenance",
+        headers=admin_headers,
+    )
+    assert changed.status_code == 200
+    refreshed = client.get("/api/v1/admin/users", headers=admin_headers)
+    updated = next(item for item in refreshed.json() if item["id"] == target["id"])
+    assert updated["role"] == "maintenance"
