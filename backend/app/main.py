@@ -76,6 +76,33 @@ class TaskSubmission(Base):
     reviewed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
+class WalletEntry(Base):
+    __tablename__ = "wallet_entries"
+    __table_args__ = (UniqueConstraint("reference", name="uq_wallet_entry_reference"),)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    entry_type: Mapped[str] = mapped_column(String(16))
+    amount_minor: Mapped[int] = mapped_column(Integer)
+    currency: Mapped[str] = mapped_column(String(3), default="BDT")
+    reference: Mapped[str] = mapped_column(String(100))
+    description: Mapped[str] = mapped_column(String(300))
+    created_by: Mapped[int] = mapped_column(ForeignKey("users.id"))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+
+
+class Withdrawal(Base):
+    __tablename__ = "withdrawals"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    amount_minor: Mapped[int] = mapped_column(Integer)
+    currency: Mapped[str] = mapped_column(String(3), default="BDT")
+    status: Mapped[str] = mapped_column(String(24), default="pending")
+    payout_reference: Mapped[Optional[str]] = mapped_column(String(120), nullable=True)
+    staff_note: Mapped[Optional[str]] = mapped_column(String(1000), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    processed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
 Base.metadata.create_all(bind=engine)
 
 
@@ -431,3 +458,129 @@ def review_submission(submission_id: int, data: SubmissionReviewInput,
     db.commit()
     return {"id": submission.id, "status": submission.status, "reviewed_by": staff.id,
             "note": submission.reviewer_note}
+
+
+class WithdrawalInput(BaseModel):
+    amount_minor: int = Field(gt=0, le=100_000_000)
+
+
+class WalletAdjustmentInput(BaseModel):
+    user_id: int = Field(gt=0)
+    direction: str = Field(pattern="^(credit|debit)$")
+    amount_minor: int = Field(gt=0, le=100_000_000)
+    reference: str = Field(min_length=6, max_length=100)
+    description: str = Field(min_length=5, max_length=300)
+
+
+class WithdrawalDecisionInput(BaseModel):
+    decision: str = Field(pattern="^(pay|reject)$")
+    payout_reference: Optional[str] = Field(default=None, min_length=4, max_length=120)
+    staff_note: Optional[str] = Field(default=None, max_length=1000)
+
+
+def wallet_totals(db: Session, user_id: int):
+    entries = db.scalars(select(WalletEntry).where(WalletEntry.user_id == user_id)).all()
+    available = 0
+    credited = 0
+    withdrawn = 0
+    for entry in entries:
+        if entry.entry_type == "credit":
+            available += entry.amount_minor
+            credited += entry.amount_minor
+        elif entry.entry_type == "debit":
+            available -= entry.amount_minor
+            withdrawn += entry.amount_minor
+        elif entry.entry_type == "hold":
+            available -= entry.amount_minor
+            withdrawn += entry.amount_minor
+        elif entry.entry_type == "release":
+            available += entry.amount_minor
+    return {"available_minor": available, "credited_minor": credited, "reserved_or_debited_minor": withdrawn, "currency": "BDT"}
+
+
+@app.get("/api/v1/wallet")
+def get_wallet(user: User = Depends(current_user), db: Session = Depends(get_db)):
+    return wallet_totals(db, user.id)
+
+
+@app.get("/api/v1/wallet/transactions")
+def wallet_transactions(user: User = Depends(current_user), db: Session = Depends(get_db)):
+    entries = db.scalars(select(WalletEntry).where(WalletEntry.user_id == user.id).order_by(WalletEntry.id.desc())).all()
+    return [{"id": e.id, "type": e.entry_type, "amount_minor": e.amount_minor, "currency": e.currency,
+             "reference": e.reference, "description": e.description, "created_at": e.created_at.isoformat()} for e in entries]
+
+
+@app.post("/api/v1/withdrawals", status_code=201)
+def request_withdrawal(data: WithdrawalInput, user: User = Depends(require_roles("member", "maintenance")), db: Session = Depends(get_db)):
+    totals = wallet_totals(db, user.id)
+    if totals["available_minor"] < data.amount_minor:
+        raise HTTPException(status_code=409, detail="Insufficient available balance")
+    withdrawal = Withdrawal(user_id=user.id, amount_minor=data.amount_minor)
+    db.add(withdrawal)
+    db.flush()
+    db.add(WalletEntry(user_id=user.id, entry_type="hold", amount_minor=data.amount_minor,
+                       reference=f"withdrawal:{withdrawal.id}:hold",
+                       description=f"Funds reserved for withdrawal request #{withdrawal.id}", created_by=user.id))
+    db.commit()
+    db.refresh(withdrawal)
+    return {"id": withdrawal.id, "amount_minor": withdrawal.amount_minor, "currency": withdrawal.currency,
+            "status": withdrawal.status, "message": "Withdrawal request submitted; funds are reserved pending manual review"}
+
+
+@app.get("/api/v1/withdrawals")
+def my_withdrawals(user: User = Depends(current_user), db: Session = Depends(get_db)):
+    rows = db.scalars(select(Withdrawal).where(Withdrawal.user_id == user.id).order_by(Withdrawal.id.desc())).all()
+    return [{"id": w.id, "amount_minor": w.amount_minor, "currency": w.currency, "status": w.status,
+             "staff_note": w.staff_note, "created_at": w.created_at.isoformat(),
+             "processed_at": w.processed_at.isoformat() if w.processed_at else None} for w in rows]
+
+
+@app.post("/api/v1/admin/wallet/adjust")
+def adjust_wallet(data: WalletAdjustmentInput, staff: User = Depends(require_roles("admin", "finance")), db: Session = Depends(get_db)):
+    target = db.get(User, data.user_id)
+    if not target:
+        raise HTTPException(status_code=404, detail="User not found")
+    if db.scalar(select(WalletEntry.id).where(WalletEntry.reference == data.reference)):
+        raise HTTPException(status_code=409, detail="This ledger reference has already been used")
+    if data.direction == "debit" and wallet_totals(db, target.id)["available_minor"] < data.amount_minor:
+        raise HTTPException(status_code=409, detail="Debit exceeds available wallet balance")
+    entry = WalletEntry(user_id=target.id, entry_type=data.direction, amount_minor=data.amount_minor,
+                        reference=data.reference, description=data.description.strip(), created_by=staff.id)
+    db.add(entry)
+    db.commit()
+    db.refresh(entry)
+    return {"id": entry.id, "user_id": target.id, "type": entry.entry_type, "amount_minor": entry.amount_minor,
+            "reference": entry.reference, "message": "Manual ledger entry recorded"}
+
+
+@app.get("/api/v1/admin/withdrawals")
+def withdrawal_queue(staff: User = Depends(require_roles("admin", "finance")), db: Session = Depends(get_db)):
+    rows = db.execute(select(Withdrawal, User).join(User, Withdrawal.user_id == User.id)
+                      .where(Withdrawal.status == "pending").order_by(Withdrawal.id.asc())).all()
+    return [{"id": w.id, "user_id": u.id, "user_name": u.display_name, "amount_minor": w.amount_minor,
+             "currency": w.currency, "status": w.status, "created_at": w.created_at.isoformat()} for w, u in rows]
+
+
+@app.post("/api/v1/admin/withdrawals/{withdrawal_id}/process")
+def process_withdrawal(withdrawal_id: int, data: WithdrawalDecisionInput,
+                       staff: User = Depends(require_roles("admin", "finance")), db: Session = Depends(get_db)):
+    withdrawal = db.get(Withdrawal, withdrawal_id)
+    if not withdrawal:
+        raise HTTPException(status_code=404, detail="Withdrawal request not found")
+    if withdrawal.status != "pending":
+        raise HTTPException(status_code=409, detail="Withdrawal request has already been processed")
+    if data.decision == "pay":
+        if not data.payout_reference:
+            raise HTTPException(status_code=422, detail="A payout transaction reference is required")
+        withdrawal.status = "paid"
+        withdrawal.payout_reference = data.payout_reference.strip()
+    else:
+        withdrawal.status = "rejected"
+        db.add(WalletEntry(user_id=withdrawal.user_id, entry_type="release", amount_minor=withdrawal.amount_minor,
+                           reference=f"withdrawal:{withdrawal.id}:release",
+                           description=f"Reserved funds released after withdrawal rejection #{withdrawal.id}",
+                           created_by=staff.id))
+    withdrawal.staff_note = data.staff_note.strip() if data.staff_note else None
+    withdrawal.processed_at = datetime.now(timezone.utc)
+    db.commit()
+    return {"id": withdrawal.id, "status": withdrawal.status, "message": "Withdrawal request processed"}
