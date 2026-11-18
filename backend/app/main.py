@@ -99,6 +99,7 @@ class DepositRequest(Base):
     advertiser_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
     amount_minor: Mapped[int] = mapped_column(Integer)
     method: Mapped[str] = mapped_column(String(24))
+    payment_destination_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     payment_reference: Mapped[str] = mapped_column(String(120))
     status: Mapped[str] = mapped_column(String(24), default="pending_review")
     staff_note: Mapped[Optional[str]] = mapped_column(String(1000), nullable=True)
@@ -133,6 +134,10 @@ class PaymentDestination(Base):
 
 
 Base.metadata.create_all(bind=engine)
+from sqlalchemy import inspect, text
+if "payment_destination_id" not in {c["name"] for c in inspect(engine).get_columns("deposit_requests")}:
+    with engine.begin() as conn:
+        conn.execute(text("ALTER TABLE deposit_requests ADD COLUMN payment_destination_id INTEGER"))
 
 
 def get_db():
@@ -574,7 +579,8 @@ def review_submission(submission_id: int, data: SubmissionReviewInput,
 
 class DepositInput(BaseModel):
     amount_minor: int = Field(gt=0, le=100_000_000)
-    method: str = Field(pattern="^(bkash|nagad|bank)$")
+    method: str = Field(min_length=2, max_length=24)
+    payment_destination_id: Optional[int] = Field(default=None, gt=0)
     payment_reference: str = Field(min_length=6, max_length=120)
 
 class DepositReviewInput(BaseModel):
@@ -587,9 +593,14 @@ class CampaignFundingInput(BaseModel):
 @app.post("/api/v1/deposits", status_code=201)
 def request_deposit(data: DepositInput, advertiser: User = Depends(require_roles("advertiser", "admin")), db: Session = Depends(get_db)):
     ref = data.payment_reference.strip()
+    destination = db.get(PaymentDestination, data.payment_destination_id) if data.payment_destination_id else None
+    if data.payment_destination_id and (not destination or not destination.active):
+        raise HTTPException(status_code=400, detail="Selected payment destination is unavailable")
+    if destination and destination.method.lower() != data.method.lower():
+        raise HTTPException(status_code=400, detail="Payment method does not match selected destination")
     if db.scalar(select(DepositRequest.id).where(DepositRequest.payment_reference == ref)):
         raise HTTPException(status_code=409, detail="This payment reference has already been submitted")
-    item = DepositRequest(advertiser_id=advertiser.id, amount_minor=data.amount_minor, method=data.method, payment_reference=ref)
+    item = DepositRequest(advertiser_id=advertiser.id, amount_minor=data.amount_minor, method=data.method, payment_destination_id=destination.id if destination else None, payment_reference=ref)
     db.add(item)
     db.commit()
     db.refresh(item)
@@ -598,12 +609,12 @@ def request_deposit(data: DepositInput, advertiser: User = Depends(require_roles
 @app.get("/api/v1/deposits")
 def my_deposits(advertiser: User = Depends(require_roles("advertiser", "admin")), db: Session = Depends(get_db)):
     rows = db.scalars(select(DepositRequest).where(DepositRequest.advertiser_id == advertiser.id).order_by(DepositRequest.id.desc())).all()
-    return [{"id": d.id, "amount_minor": d.amount_minor, "method": d.method, "payment_reference": d.payment_reference, "status": d.status, "staff_note": d.staff_note} for d in rows]
+    return [{"id": d.id, "amount_minor": d.amount_minor, "method": d.method, "payment_destination_id": d.payment_destination_id, "payment_reference": d.payment_reference, "status": d.status, "staff_note": d.staff_note} for d in rows]
 
 @app.get("/api/v1/admin/deposits")
 def deposit_queue(staff: User = Depends(require_roles("admin", "finance")), db: Session = Depends(get_db)):
     rows = db.execute(select(DepositRequest, User).join(User, DepositRequest.advertiser_id == User.id).where(DepositRequest.status == "pending_review").order_by(DepositRequest.id.asc())).all()
-    return [{"id": d.id, "advertiser_id": u.id, "advertiser_name": u.display_name, "amount_minor": d.amount_minor, "method": d.method, "payment_reference": d.payment_reference} for d, u in rows]
+    return [{"id": d.id, "advertiser_id": u.id, "advertiser_name": u.display_name, "amount_minor": d.amount_minor, "method": d.method, "payment_destination_id": d.payment_destination_id, "payment_reference": d.payment_reference} for d, u in rows]
 
 @app.post("/api/v1/admin/deposits/{deposit_id}/review")
 def review_deposit(deposit_id: int, data: DepositReviewInput, staff: User = Depends(require_roles("admin", "finance")), db: Session = Depends(get_db)):
