@@ -246,3 +246,54 @@ def test_wallet_ledger_and_manual_withdrawal_lifecycle(client):
     own_withdrawals = client.get("/api/v1/withdrawals", headers=worker_headers)
     assert own_withdrawals.status_code == 200
     assert [item["status"] for item in own_withdrawals.json()] == ["paid", "rejected"]
+
+
+def test_verified_deposit_campaign_escrow_and_reward_credit(client):
+    admin_login = client.post("/api/v1/auth/login", json={"email": "admin@example.test", "password": "test-admin-password"})
+    admin_headers = {"Authorization": f"Bearer {admin_login.json()['access_token']}"}
+    advertiser_token = register(client, "escrow-advertiser@example.test", "Escrow Advertiser")
+    advertiser_headers = {"Authorization": f"Bearer {advertiser_token}"}
+    worker_token = register(client, "escrow-worker@example.test", "Escrow Worker")
+    worker_headers = {"Authorization": f"Bearer {worker_token}"}
+    assert client.post("/api/v1/admin/users/2/role?role=advertiser", headers=admin_headers).status_code == 200
+    deposit = client.post("/api/v1/deposits", headers=advertiser_headers, json={
+        "amount_minor": 12000, "method": "bkash", "payment_reference": "BKASH-VERIFY-12345"
+    })
+    assert deposit.status_code == 201, deposit.text
+    assert client.get("/api/v1/wallet", headers=advertiser_headers).json()["available_minor"] == 0
+    duplicate = client.post("/api/v1/deposits", headers=advertiser_headers, json={
+        "amount_minor": 12000, "method": "bkash", "payment_reference": "BKASH-VERIFY-12345"
+    })
+    assert duplicate.status_code == 409
+    verified = client.post(f"/api/v1/admin/deposits/{deposit.json()['id']}/review", headers=admin_headers, json={"decision": "verify"})
+    assert verified.status_code == 200, verified.text
+    assert client.get("/api/v1/wallet", headers=advertiser_headers).json()["available_minor"] == 12000
+    campaign = client.post("/api/v1/campaigns", headers=advertiser_headers, json={
+        "title": "Usability pilot", "objective": "Collect genuine feedback on a small business website."
+    })
+    campaign_id = campaign.json()["id"]
+    task = client.post(f"/api/v1/campaigns/{campaign_id}/tasks", headers=advertiser_headers, json={
+        "title": "Review the website", "instructions": "Explore the website and provide honest written feedback.",
+        "reward_minor": 5000, "capacity": 1
+    })
+    task_id = task.json()["id"]
+    assert client.post(f"/api/v1/campaigns/{campaign_id}/fund", headers=advertiser_headers, json={"amount_minor": 5000}).status_code == 200
+    assert client.get("/api/v1/wallet", headers=advertiser_headers).json()["available_minor"] == 7000
+    assert client.post(f"/api/v1/campaigns/{campaign_id}/submit", headers=advertiser_headers).status_code == 200
+    assert client.post(f"/api/v1/admin/campaigns/{campaign_id}/review", headers=admin_headers, json={"decision": "approve"}).status_code == 200
+    assert client.post(f"/api/v1/campaigns/{campaign_id}/tasks/{task_id}/submit", headers=advertiser_headers).status_code == 200
+    assert client.post(f"/api/v1/admin/tasks/{task_id}/review", headers=admin_headers, json={"decision": "approve"}).status_code == 200
+    evidence = client.post(f"/api/v1/tasks/{task_id}/submissions", headers=worker_headers, json={
+        "evidence_text": "I tested the main flow and submitted genuine feedback about the navigation."
+    })
+    assert evidence.status_code == 201, evidence.text
+    submission_id = evidence.json()["id"]
+    paid = client.post(f"/api/v1/admin/submissions/{submission_id}/review", headers=admin_headers, json={"decision": "approve"})
+    assert paid.status_code == 200, paid.text
+    assert paid.json()["reward_credited_minor"] == 5000
+    assert client.get("/api/v1/wallet", headers=worker_headers).json()["available_minor"] == 5000
+    budget = client.get(f"/api/v1/campaigns/{campaign_id}/budget", headers=advertiser_headers)
+    assert budget.json()["escrow_balance_minor"] == 0
+    assert budget.json()["spent_minor"] == 5000
+    repeated = client.post(f"/api/v1/admin/submissions/{submission_id}/review", headers=admin_headers, json={"decision": "approve"})
+    assert repeated.status_code == 409
