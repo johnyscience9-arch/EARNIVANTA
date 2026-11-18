@@ -213,6 +213,9 @@ if "referral_code" not in {c["name"] for c in inspect(engine).get_columns("users
 if "referred_by_id" not in {c["name"] for c in inspect(engine).get_columns("users")}:
     with engine.begin() as conn:
         conn.execute(text("ALTER TABLE users ADD COLUMN referred_by_id INTEGER"))
+with engine.begin() as conn:
+    conn.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS uq_users_referral_code ON users (referral_code)"))
+
 if "pinned" not in {c["name"] for c in inspect(engine).get_columns("tasks")}:
     with engine.begin() as conn:
         conn.execute(text("ALTER TABLE tasks ADD COLUMN pinned BOOLEAN NOT NULL DEFAULT FALSE"))
