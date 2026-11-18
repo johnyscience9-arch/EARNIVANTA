@@ -270,3 +270,61 @@ if admin_email and admin_password:
         if not existing:
             db.add(User(email=admin_email, display_name="Earnivanta Admin", password_hash=hash_password(admin_password), role="admin"))
             db.commit()
+
+
+class ReviewDecision(BaseModel):
+    decision: str = Field(pattern="^(approve|reject)$")
+
+
+@app.post("/api/v1/campaigns/{campaign_id}/submit")
+def submit_campaign(campaign_id: int, user: User = Depends(require_roles("advertiser", "admin")), db: Session = Depends(get_db)):
+    campaign = db.get(Campaign, campaign_id)
+    if not campaign or (user.role != "admin" and campaign.advertiser_id != user.id):
+        raise HTTPException(status_code=404, detail="Campaign not found")
+    if campaign.status != "draft":
+        raise HTTPException(status_code=409, detail="Only draft campaigns can be submitted")
+    if not db.scalar(select(Task.id).where(Task.campaign_id == campaign.id)):
+        raise HTTPException(status_code=409, detail="Add at least one task before submitting")
+    campaign.status = "pending_review"
+    db.commit()
+    return {"id": campaign.id, "status": campaign.status, "message": "Campaign submitted for review"}
+
+
+@app.post("/api/v1/admin/campaigns/{campaign_id}/review")
+def review_campaign(campaign_id: int, data: ReviewDecision, admin: User = Depends(require_roles("admin", "reviewer")), db: Session = Depends(get_db)):
+    campaign = db.get(Campaign, campaign_id)
+    if not campaign:
+        raise HTTPException(status_code=404, detail="Campaign not found")
+    if campaign.status != "pending_review":
+        raise HTTPException(status_code=409, detail="Campaign is not waiting for review")
+    campaign.status = "active" if data.decision == "approve" else "rejected"
+    db.commit()
+    return {"id": campaign.id, "status": campaign.status, "reviewed_by": admin.id}
+
+
+@app.post("/api/v1/campaigns/{campaign_id}/tasks/{task_id}/submit")
+def submit_task(campaign_id: int, task_id: int, user: User = Depends(require_roles("advertiser", "admin")), db: Session = Depends(get_db)):
+    campaign = db.get(Campaign, campaign_id)
+    task = db.get(Task, task_id)
+    if not campaign or not task or task.campaign_id != campaign_id or (user.role != "admin" and campaign.advertiser_id != user.id):
+        raise HTTPException(status_code=404, detail="Task not found")
+    if campaign.status not in {"draft", "active"} or task.status != "draft":
+        raise HTTPException(status_code=409, detail="Task cannot be submitted in its current state")
+    task.status = "pending_review"
+    db.commit()
+    return {"id": task.id, "status": task.status, "message": "Task submitted for review"}
+
+
+@app.post("/api/v1/admin/tasks/{task_id}/review")
+def review_task(task_id: int, data: ReviewDecision, admin: User = Depends(require_roles("admin", "reviewer")), db: Session = Depends(get_db)):
+    task = db.get(Task, task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+    if task.status != "pending_review":
+        raise HTTPException(status_code=409, detail="Task is not waiting for review")
+    campaign = db.get(Campaign, task.campaign_id)
+    if data.decision == "approve" and campaign.status != "active":
+        raise HTTPException(status_code=409, detail="Campaign must be approved before its tasks")
+    task.status = "published" if data.decision == "approve" else "rejected"
+    db.commit()
+    return {"id": task.id, "status": task.status, "reviewed_by": admin.id}
