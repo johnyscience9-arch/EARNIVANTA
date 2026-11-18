@@ -197,6 +197,13 @@ if "proof_image_data" not in {c["name"] for c in inspect(engine).get_columns("de
 if "pinned" not in {c["name"] for c in inspect(engine).get_columns("tasks")}:
     with engine.begin() as conn:
         conn.execute(text("ALTER TABLE tasks ADD COLUMN pinned BOOLEAN NOT NULL DEFAULT FALSE"))
+if "category" not in {c["name"] for c in inspect(engine).get_columns("tasks")}:
+    with engine.begin() as conn:
+        conn.execute(text("ALTER TABLE tasks ADD COLUMN category VARCHAR(32) NOT NULL DEFAULT 'other'"))
+if "client_charge_minor" not in {c["name"] for c in inspect(engine).get_columns("tasks")}:
+    with engine.begin() as conn:
+        conn.execute(text("ALTER TABLE tasks ADD COLUMN client_charge_minor INTEGER NOT NULL DEFAULT 0"))
+
 if "payout_proof_image" not in {c["name"] for c in inspect(engine).get_columns("withdrawals")}:
     with engine.begin() as conn:
         conn.execute(text("ALTER TABLE withdrawals ADD COLUMN payout_proof_image TEXT"))
