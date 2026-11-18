@@ -221,7 +221,7 @@ def create_campaign(data: CampaignInput, user: User = Depends(require_roles("adv
 @app.get("/api/v1/campaigns")
 def list_campaigns(user: User = Depends(current_user), db: Session = Depends(get_db)):
     query = select(Campaign).order_by(Campaign.id.desc())
-    if user.role != "admin":
+    if user.role not in {"admin", "reviewer"}:
         query = query.where(Campaign.advertiser_id == user.id)
     campaigns = db.scalars(query).all()
     return [{"id": c.id, "title": c.title, "objective": c.objective, "status": c.status} for c in campaigns]
@@ -328,3 +328,16 @@ def review_task(task_id: int, data: ReviewDecision, admin: User = Depends(requir
     task.status = "published" if data.decision == "approve" else "rejected"
     db.commit()
     return {"id": task.id, "status": task.status, "reviewed_by": admin.id}
+
+
+@app.get("/api/v1/admin/review-queue")
+def review_queue(staff: User = Depends(require_roles("admin", "reviewer")), db: Session = Depends(get_db)):
+    campaigns = db.scalars(select(Campaign).where(Campaign.status == "pending_review").order_by(Campaign.id.asc())).all()
+    tasks = db.execute(select(Task, Campaign).join(Campaign, Task.campaign_id == Campaign.id)
+                       .where(Task.status == "pending_review").order_by(Task.id.asc())).all()
+    return {
+        "campaigns": [{"id": c.id, "advertiser_id": c.advertiser_id, "title": c.title, "objective": c.objective, "status": c.status} for c in campaigns],
+        "tasks": [{"id": t.id, "campaign_id": t.campaign_id, "campaign_title": campaign.title, "title": t.title,
+                   "instructions": t.instructions, "reward_minor": t.reward_minor, "currency": t.currency,
+                   "capacity": t.capacity, "status": t.status} for t, campaign in tasks]
+    }
