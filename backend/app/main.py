@@ -11,7 +11,7 @@ from fastapi import Depends, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, EmailStr, Field
-from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, create_engine, select
+from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, UniqueConstraint, create_engine, func, select
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sessionmaker
 
 DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./earnivanta.db")
@@ -60,6 +60,20 @@ class Task(Base):
     currency: Mapped[str] = mapped_column(String(3), default="BDT")
     capacity: Mapped[int] = mapped_column(Integer, default=1)
     status: Mapped[str] = mapped_column(String(24), default="draft")
+
+
+class TaskSubmission(Base):
+    __tablename__ = "task_submissions"
+    __table_args__ = (UniqueConstraint("task_id", "worker_id", name="uq_task_worker_submission"),)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    task_id: Mapped[int] = mapped_column(ForeignKey("tasks.id"), index=True)
+    worker_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    evidence_text: Mapped[str] = mapped_column(String(3000))
+    evidence_url: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
+    status: Mapped[str] = mapped_column(String(24), default="pending_review")
+    reviewer_note: Mapped[Optional[str]] = mapped_column(String(1000), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    reviewed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 Base.metadata.create_all(bind=engine)
@@ -341,3 +355,79 @@ def review_queue(staff: User = Depends(require_roles("admin", "reviewer")), db: 
                    "instructions": t.instructions, "reward_minor": t.reward_minor, "currency": t.currency,
                    "capacity": t.capacity, "status": t.status} for t, campaign in tasks]
     }
+
+
+class SubmissionInput(BaseModel):
+    evidence_text: str = Field(min_length=10, max_length=3000)
+    evidence_url: Optional[str] = Field(default=None, max_length=500)
+
+
+class SubmissionReviewInput(BaseModel):
+    decision: str = Field(pattern="^(approve|reject)$")
+    reviewer_note: Optional[str] = Field(default=None, max_length=1000)
+
+
+@app.post("/api/v1/tasks/{task_id}/submissions", status_code=201)
+def create_submission(task_id: int, data: SubmissionInput, worker: User = Depends(require_roles("member", "maintenance")), db: Session = Depends(get_db)):
+    task = db.get(Task, task_id)
+    if not task or task.status != "published":
+        raise HTTPException(status_code=404, detail="Available task not found")
+    campaign = db.get(Campaign, task.campaign_id)
+    if not campaign or campaign.status != "active":
+        raise HTTPException(status_code=409, detail="Campaign is not active")
+    existing = db.scalar(select(TaskSubmission).where(TaskSubmission.task_id == task.id, TaskSubmission.worker_id == worker.id))
+    if existing:
+        raise HTTPException(status_code=409, detail="You have already submitted this task")
+    used_slots = db.scalar(select(func.count(TaskSubmission.id)).where(
+        TaskSubmission.task_id == task.id,
+        TaskSubmission.status.in_(["pending_review", "approved"])
+    )) or 0
+    if used_slots >= task.capacity:
+        raise HTTPException(status_code=409, detail="This task has reached its participant limit")
+    submission = TaskSubmission(task_id=task.id, worker_id=worker.id,
+                                evidence_text=data.evidence_text.strip(),
+                                evidence_url=(str(data.evidence_url).strip() if data.evidence_url else None))
+    db.add(submission)
+    try:
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="Submission could not be saved; check whether you already submitted")
+    db.refresh(submission)
+    return {"id": submission.id, "task_id": task.id, "status": submission.status, "message": "Evidence submitted for review"}
+
+
+@app.get("/api/v1/my/submissions")
+def my_submissions(worker: User = Depends(current_user), db: Session = Depends(get_db)):
+    rows = db.execute(select(TaskSubmission, Task).join(Task, TaskSubmission.task_id == Task.id)
+                      .where(TaskSubmission.worker_id == worker.id).order_by(TaskSubmission.id.desc())).all()
+    return [{"id": s.id, "task_id": t.id, "task_title": t.title, "status": s.status,
+             "reviewer_note": s.reviewer_note, "created_at": s.created_at.isoformat()} for s, t in rows]
+
+
+@app.get("/api/v1/admin/submissions")
+def list_submissions(staff: User = Depends(require_roles("admin", "reviewer")), db: Session = Depends(get_db)):
+    rows = db.execute(select(TaskSubmission, Task, User)
+                      .join(Task, TaskSubmission.task_id == Task.id)
+                      .join(User, TaskSubmission.worker_id == User.id)
+                      .where(TaskSubmission.status == "pending_review")
+                      .order_by(TaskSubmission.id.asc())).all()
+    return [{"id": s.id, "task_id": t.id, "task_title": t.title, "worker_id": u.id,
+             "worker_name": u.display_name, "evidence_text": s.evidence_text, "evidence_url": s.evidence_url,
+             "submitted_at": s.created_at.isoformat()} for s, t, u in rows]
+
+
+@app.post("/api/v1/admin/submissions/{submission_id}/review")
+def review_submission(submission_id: int, data: SubmissionReviewInput,
+                      staff: User = Depends(require_roles("admin", "reviewer")), db: Session = Depends(get_db)):
+    submission = db.get(TaskSubmission, submission_id)
+    if not submission:
+        raise HTTPException(status_code=404, detail="Submission not found")
+    if submission.status != "pending_review":
+        raise HTTPException(status_code=409, detail="Submission has already been reviewed")
+    submission.status = "approved" if data.decision == "approve" else "rejected"
+    submission.reviewer_note = data.reviewer_note.strip() if data.reviewer_note else None
+    submission.reviewed_at = datetime.now(timezone.utc)
+    db.commit()
+    return {"id": submission.id, "status": submission.status, "reviewed_by": staff.id,
+            "note": submission.reviewer_note}
