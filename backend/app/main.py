@@ -47,6 +47,8 @@ class Campaign(Base):
     title: Mapped[str] = mapped_column(String(140))
     objective: Mapped[str] = mapped_column(String(500))
     status: Mapped[str] = mapped_column(String(24), default="draft")
+    escrow_balance_minor: Mapped[int] = mapped_column(Integer, default=0)
+    spent_minor: Mapped[int] = mapped_column(Integer, default=0)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
 
@@ -497,6 +499,67 @@ class DepositReviewInput(BaseModel):
 
 class CampaignFundingInput(BaseModel):
     amount_minor: int = Field(gt=0, le=100_000_000)
+
+@app.post("/api/v1/deposits", status_code=201)
+def request_deposit(data: DepositInput, advertiser: User = Depends(require_roles("advertiser", "admin")), db: Session = Depends(get_db)):
+    ref = data.payment_reference.strip()
+    if db.scalar(select(DepositRequest.id).where(DepositRequest.payment_reference == ref)):
+        raise HTTPException(status_code=409, detail="This payment reference has already been submitted")
+    item = DepositRequest(advertiser_id=advertiser.id, amount_minor=data.amount_minor, method=data.method, payment_reference=ref)
+    db.add(item)
+    db.commit()
+    db.refresh(item)
+    return {"id": item.id, "status": item.status, "message": "Awaiting independent manual verification; wallet not credited"}
+
+@app.get("/api/v1/deposits")
+def my_deposits(advertiser: User = Depends(require_roles("advertiser", "admin")), db: Session = Depends(get_db)):
+    rows = db.scalars(select(DepositRequest).where(DepositRequest.advertiser_id == advertiser.id).order_by(DepositRequest.id.desc())).all()
+    return [{"id": d.id, "amount_minor": d.amount_minor, "method": d.method, "payment_reference": d.payment_reference, "status": d.status, "staff_note": d.staff_note} for d in rows]
+
+@app.get("/api/v1/admin/deposits")
+def deposit_queue(staff: User = Depends(require_roles("admin", "finance")), db: Session = Depends(get_db)):
+    rows = db.execute(select(DepositRequest, User).join(User, DepositRequest.advertiser_id == User.id).where(DepositRequest.status == "pending_review").order_by(DepositRequest.id.asc())).all()
+    return [{"id": d.id, "advertiser_id": u.id, "advertiser_name": u.display_name, "amount_minor": d.amount_minor, "method": d.method, "payment_reference": d.payment_reference} for d, u in rows]
+
+@app.post("/api/v1/admin/deposits/{deposit_id}/review")
+def review_deposit(deposit_id: int, data: DepositReviewInput, staff: User = Depends(require_roles("admin", "finance")), db: Session = Depends(get_db)):
+    item = db.scalar(select(DepositRequest).where(DepositRequest.id == deposit_id).with_for_update())
+    if not item:
+        raise HTTPException(status_code=404, detail="Deposit request not found")
+    if item.status != "pending_review":
+        raise HTTPException(status_code=409, detail="Deposit already processed")
+    if data.decision == "verify":
+        db.add(WalletEntry(user_id=item.advertiser_id, entry_type="credit", amount_minor=item.amount_minor, reference=f"deposit:{item.id}:verified", description=f"Verified deposit #{item.id}", created_by=staff.id))
+        item.status = "verified"
+    else:
+        item.status = "rejected"
+    item.staff_note = data.staff_note.strip() if data.staff_note else None
+    item.reviewed_by = staff.id
+    item.reviewed_at = datetime.now(timezone.utc)
+    db.commit()
+    return {"id": item.id, "status": item.status}
+
+@app.post("/api/v1/campaigns/{campaign_id}/fund")
+def fund_campaign(campaign_id: int, data: CampaignFundingInput, advertiser: User = Depends(require_roles("advertiser", "admin")), db: Session = Depends(get_db)):
+    campaign = db.scalar(select(Campaign).where(Campaign.id == campaign_id).with_for_update())
+    if not campaign or (advertiser.role != "admin" and campaign.advertiser_id != advertiser.id):
+        raise HTTPException(status_code=404, detail="Campaign not found")
+    if campaign.status not in {"draft", "pending_review", "active"}:
+        raise HTTPException(status_code=409, detail="Campaign cannot receive funding in this state")
+    owner = db.scalar(select(User).where(User.id == campaign.advertiser_id).with_for_update())
+    if wallet_totals(db, owner.id)["available_minor"] < data.amount_minor:
+        raise HTTPException(status_code=409, detail="Insufficient verified wallet balance")
+    db.add(WalletEntry(user_id=owner.id, entry_type="debit", amount_minor=data.amount_minor, reference=f"campaign:{campaign.id}:fund:{secrets.token_hex(8)}", description=f"Budget reserved for campaign #{campaign.id}", created_by=advertiser.id))
+    campaign.escrow_balance_minor += data.amount_minor
+    db.commit()
+    return {"campaign_id": campaign.id, "escrow_balance_minor": campaign.escrow_balance_minor, "funded_amount_minor": data.amount_minor, "currency": "BDT"}
+
+@app.get("/api/v1/campaigns/{campaign_id}/budget")
+def campaign_budget(campaign_id: int, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    campaign = db.get(Campaign, campaign_id)
+    if not campaign or (user.role not in {"admin", "reviewer"} and campaign.advertiser_id != user.id):
+        raise HTTPException(status_code=404, detail="Campaign not found")
+    return {"campaign_id": campaign.id, "escrow_balance_minor": campaign.escrow_balance_minor, "spent_minor": campaign.spent_minor, "currency": "BDT"}
 
 class WithdrawalInput(BaseModel):
     amount_minor: int = Field(gt=0, le=100_000_000)
