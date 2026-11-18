@@ -14,11 +14,25 @@ from pydantic import BaseModel, EmailStr, Field
 from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, UniqueConstraint, create_engine, func, select
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sessionmaker
 
-DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./earnivanta.db")
+APP_ENV = os.getenv("APP_ENV", "development").strip().lower()
+DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./earnivanta.db").strip()
+if DATABASE_URL.startswith("postgres://"):
+    DATABASE_URL = "postgresql+psycopg://" + DATABASE_URL[len("postgres://"):]
+elif DATABASE_URL.startswith("postgresql://"):
+    DATABASE_URL = "postgresql+psycopg://" + DATABASE_URL[len("postgresql://"):]
 TOKEN_SECRET = os.getenv("TOKEN_SECRET", "")
 TOKEN_TTL_HOURS = int(os.getenv("TOKEN_TTL_HOURS", "24"))
+if TOKEN_TTL_HOURS < 1 or TOKEN_TTL_HOURS > 720:
+    raise RuntimeError("TOKEN_TTL_HOURS must be between 1 and 720")
 if not TOKEN_SECRET:
+    if APP_ENV == "production":
+        raise RuntimeError("TOKEN_SECRET is required in production")
     TOKEN_SECRET = "LOCAL-ONLY-" + secrets.token_urlsafe(32)
+if APP_ENV == "production":
+    if len(TOKEN_SECRET) < 32:
+        raise RuntimeError("TOKEN_SECRET must contain at least 32 characters in production")
+    if DATABASE_URL.startswith("sqlite"):
+        raise RuntimeError("SQLite is not allowed in production; configure managed PostgreSQL")
 
 connect_args = {"check_same_thread": False} if DATABASE_URL.startswith("sqlite") else {}
 engine = create_engine(DATABASE_URL, connect_args=connect_args, pool_pre_ping=True)
@@ -270,7 +284,13 @@ def payment_destination_public(item: PaymentDestination):
 
 
 app = FastAPI(title="Earnivanta API", version="0.1.0", description="Initial authentication and campaign foundation.")
-origins = [x.strip() for x in os.getenv("CORS_ORIGINS", "http://localhost:5500,http://127.0.0.1:5500").split(",") if x.strip()]
+cors_value = os.getenv("CORS_ORIGINS", "http://localhost:5500,http://127.0.0.1:5500")
+origins = [x.strip().rstrip("/") for x in cors_value.split(",") if x.strip()]
+if APP_ENV == "production":
+    if not origins or any(origin == "*" for origin in origins):
+        raise RuntimeError("Set CORS_ORIGINS to the exact HTTPS frontend origin(s) in production")
+    if any(not origin.startswith("https://") for origin in origins):
+        raise RuntimeError("Production CORS_ORIGINS must contain HTTPS origins only")
 app.add_middleware(CORSMiddleware, allow_origins=origins, allow_credentials=True,
                    allow_methods=["GET", "POST", "PATCH", "OPTIONS"], allow_headers=["Authorization", "Content-Type"])
 
