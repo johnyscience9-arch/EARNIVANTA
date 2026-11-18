@@ -2,50 +2,57 @@
 
 **Work. Promote. Build. Grow.**
 
-Earnivanta is a planned digital marketplace connecting:
-- Workers with compliant task, research and feedback opportunities.
-- Advertisers with genuine awareness and consent-based lead-generation campaigns.
-- Businesses and individuals with custom website, Android APK and Windows desktop development services.
-- A manually managed support and maintenance team.
+Earnivanta is a digital marketplace project for:
+- Workers: lawful research, product testing, feedback and real task opportunities.
+- Advertisers: genuine awareness, voluntary participation and consent-based lead generation.
+- Businesses and individuals: custom websites, Android applications and Windows software.
+- Platform operations: human review of campaigns, task evidence and manual payment records.
 
-## Current status
+## Current repository status
 
-The first commit establishes a responsive, original landing-page prototype in `index.html`.
+The public website and a connected API client portal are in the repository:
+- `index.html` — bilingual English/Bangla public landing page.
+- `portal.html` — member sign-up/sign-in, wallet, task feed and evidence submission, advertiser campaign drafts, deposit claims, admin/reviewer queues, finance queues and payment destination settings.
+- `finance.html` — separate finance operations console.
+- `payment-settings.html` — separate payment destination administration.
+- `add-funds.html` — standalone manual deposit claim page.
+- `backend/` — FastAPI development API, SQLAlchemy models and workflow integration tests.
+- `.github/workflows/` — GitHub Pages deployment, backend checks and frontend JavaScript validation.
 
-**Not yet implemented:** real accounts, database, wallet ledger, payment processing, KYC storage/review, live chat, task submissions, campaign moderation, project ordering and admin permissions. The current access form is a demo only and does not create accounts or accept payments or identity documents.
+The public frontend is hosted by GitHub Pages. The API is a separate service and **has not been deployed or connected to a production database yet**. The portal asks for an API base URL; until an API service is deployed and configured, sign-up, sign-in, wallet and operational actions cannot work online.
 
-## Safety and trust principles
+## What is implemented in the API foundation
 
-- No guaranteed income, sales, organic reach or social-platform engagement.
-- Do not sell or reward artificial likes, follows, subscribers, reviews or fake views.
-- Campaigns must use consent-based leads, genuine research, product feedback, approved advertising or other platform-compliant methods.
-- Manual payment and identity review still require secure records, restricted staff access, consent, retention limits and legal review before collecting real identity documents.
-- Joining fees must pay for a clearly described service; they must never fund member earnings or recruitment rewards.
+- Registration and login with PBKDF2-HMAC-SHA256 password hashes and signed expiring bearer tokens.
+- Role-protected member, advertiser, maintenance, reviewer, finance and admin routes.
+- Campaign and task draft creation, moderation, worker evidence and reviewer decisions.
+- Append-only wallet ledger, manual deposit claims, campaign escrow, reward credit on approved evidence, withdrawal holds and manual processing.
+- Admin-managed bKash, Nagad, Rocket, Upay, bank and other payment destinations.
+- Integration tests for campaign/task/submission lifecycle, wallet/withdrawal lifecycle and verified deposit/escrow/reward lifecycle.
 
-## Free-first deployment
+## Not yet ready for public business operation
 
-The project is designed for a free-first deployment. Hosting providers and free-tier quotas can change; verify current limits before launch. A free subdomain can be used initially. A custom domain such as `earnivanta.com` is optional and normally costs money.
+This repository is **not a production-ready marketplace**. The following are still required before accepting real users or money:
+- Deploy the API and managed PostgreSQL database; configure a strong secret, exact CORS origins, backups and monitoring.
+- Production security work: rate limiting, email verification, password reset, token revocation, audit logs, database migrations, CSRF strategy and security review.
+- A complete user/staff directory and permission assignment interface; role assignment currently requires a known user ID.
+- A real project-order workflow, quote/milestone/delivery tracking and live support chat.
+- KYC workflow and legal/privacy review. Do not upload NID/passport images or sensitive identity documents to the current API.
+- Payment reconciliation against actual merchant transaction history. No bKash/Nagad gateway or automatic payment verification exists.
+- Production payout operations, customer support and dispute/refund policy.
+- End-to-end tests against a deployed staging API and accessibility/security testing.
 
-## Planned milestones
+Do not collect real money, joining fees or identity documents through the current prototype. Do not promise income. Any future joining fee must pay for a clearly disclosed real service and must never fund other members or recruitment rewards.
 
-1. Responsive landing page and service catalogue.
-2. Backend, secure authentication and role-based access.
-3. Worker, advertiser, maintenance and admin dashboards.
-4. Campaigns, tasks, proof review and auditable wallet ledger.
-5. Manual payment and secure KYC review workflow.
-6. First-party live chat and support assignment.
-7. Digital development project requests and delivery tracking.
-8. Android APK and Windows EXE clients using the same backend.
-9. Security, privacy, accessibility and end-to-end testing.
+## Campaign integrity
 
-## Local preview
+Do not publish artificial likes, follows, subscribers, views, fabricated reviews, deceptive platform manipulation or undisclosed engagement. Use compliant advertising, voluntary research, honest product feedback, consent-based leads and genuine work.
 
-Open `index.html` in a modern browser. This first version uses no external libraries or paid APIs.
+## Deploy
 
-## Architecture contract
+GitHub Pages publishes the static website from `main` using `.github/workflows/pages.yml`. The API is not deployed by that workflow. Backend deployment instructions and environment requirements are in [backend/README.md](backend/README.md) and [docs/FREE_DEPLOYMENT.md](docs/FREE_DEPLOYMENT.md).
 
-The detailed platform architecture, role permissions, data model, workflow states, privacy requirements and API boundary are documented in [`docs/PLATFORM_BLUEPRINT.md`](docs/PLATFORM_BLUEPRINT.md). This is the implementation contract for subsequent backend and client work.
+## Tests
 
-## Backend foundation
-
-A local-development FastAPI backend now lives in [`backend/`](backend/). It includes registration/login, signed bearer tokens, role checks, advertiser campaign drafts and a backend CI validation workflow. Follow [`backend/README.md`](backend/README.md) to run it locally. This is an early development foundation, not a production payment/KYC service; real payments, identity uploads, wallet settlement and live chat are not enabled.
+- Frontend: GitHub Actions extracts and syntax-checks every inline JavaScript block in all five HTML pages with Node.js.
+- Backend: GitHub Actions compiles the FastAPI app and runs the integration test suite with pytest.
