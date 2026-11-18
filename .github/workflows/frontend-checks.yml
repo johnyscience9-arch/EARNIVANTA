@@ -1,0 +1,74 @@
+name: Frontend checks
+
+on:
+  push:
+    paths:
+      - "*.html"
+      - ".github/workflows/frontend-checks.yml"
+  pull_request:
+    paths:
+      - "*.html"
+      - ".github/workflows/frontend-checks.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Validate HTML entry points and inline JavaScript
+        run: |
+          python - <<'PY'
+          from html.parser import HTMLParser
+          from pathlib import Path
+          import re, subprocess, tempfile
+
+          pages = ["index.html", "portal.html", "finance.html", "payment-settings.html", "add-funds.html"]
+          class Scripts(HTMLParser):
+              def __init__(self):
+                  super().__init__()
+                  self.in_script = False
+                  self.current = []
+                  self.scripts = []
+              def handle_starttag(self, tag, attrs):
+                  if tag == "script":
+                      self.in_script = True
+                      self.current = []
+              def handle_data(self, data):
+                  if self.in_script:
+                      self.current.append(data)
+              def handle_endtag(self, tag):
+                  if tag == "script" and self.in_script:
+                      self.scripts.append("".join(self.current))
+                      self.in_script = False
+
+          for name in pages:
+              path = Path(name)
+              assert path.is_file(), f"Missing page: {name}"
+              source = path.read_text(encoding="utf-8")
+              parser = Scripts()
+              parser.feed(source)
+              for i, script in enumerate(parser.scripts):
+                  if not script.strip():
+                      continue
+                  with tempfile.NamedTemporaryFile("w", suffix=".js", encoding="utf-8", delete=False) as f:
+                      f.write(script)
+                      temp = f.name
+                  subprocess.run(["node", "--check", temp], check=True)
+              print(f"OK {name}: {len(parser.scripts)} inline script block(s)")
+          home = Path("index.html").read_text(encoding="utf-8")
+          assert 'href="./portal.html"' in home, "Homepage must link to the member portal"
+          portal = Path("portal.html").read_text(encoding="utf-8")
+          for route in ["/api/v1/auth/register", "/api/v1/auth/login", "/api/v1/tasks", "/api/v1/wallet", "/api/v1/admin/review-queue"]:
+              assert route in portal, f"Portal missing API route {route}"
+          print("Homepage-to-portal links and key API route references OK")
+          PY
