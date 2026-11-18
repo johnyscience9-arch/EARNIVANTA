@@ -235,7 +235,7 @@ def test_wallet_ledger_and_manual_withdrawal_lifecycle(client):
     paid = client.post(
         f"/api/v1/admin/withdrawals/{paid_id}/process",
         headers=admin_headers,
-        json={"decision": "pay", "payout_reference": "TEST-PAYOUT-REF-001", "staff_note": "Test payout only."},
+        json={"decision": "pay", "payout_reference": "TEST-PAYOUT-REF-001", "payout_proof_image": "data:image/png;base64,aGVsbG8=", "staff_note": "Test payout only."},
     )
     assert paid.status_code == 200
     assert paid.json()["status"] == "paid"
@@ -263,6 +263,13 @@ def test_wallet_ledger_and_manual_withdrawal_lifecycle(client):
 def test_verified_deposit_campaign_escrow_and_reward_credit(client):
     admin_login = client.post("/api/v1/auth/login", json={"email": "admin@example.com", "password": "test-admin-password"})
     admin_headers = {"Authorization": f"Bearer {admin_login.json()['access_token']}"}
+    pricing = client.put("/api/v1/admin/pricing", headers=admin_headers, json={
+        "commission_percent": 20, "referral_reward_minor": 700,
+        "rates": {"product_feedback": 5000, "website_testing": 5000, "app_testing": 5000,
+                  "survey": 5000, "data_labeling": 5000, "ai_evaluation": 5000,
+                  "transcription": 5000, "other": 5000},
+    })
+    assert pricing.status_code == 200, pricing.text
     advertiser_token = register(client, "escrow-advertiser@example.com", "Escrow Advertiser")
     advertiser_headers = {"Authorization": f"Bearer {advertiser_token}"}
     worker_token = register(client, "escrow-worker@example.com", "Escrow Worker")
@@ -286,11 +293,11 @@ def test_verified_deposit_campaign_escrow_and_reward_credit(client):
     campaign_id = campaign.json()["id"]
     task = client.post(f"/api/v1/campaigns/{campaign_id}/tasks", headers=advertiser_headers, json={
         "title": "Review the website", "instructions": "Explore the website and provide honest written feedback.",
-        "reward_minor": 5000, "capacity": 1
+        "category": "product_feedback", "capacity": 1
     })
     task_id = task.json()["id"]
-    assert client.post(f"/api/v1/campaigns/{campaign_id}/fund", headers=advertiser_headers, json={"amount_minor": 5000}).status_code == 200
-    assert client.get("/api/v1/wallet", headers=advertiser_headers).json()["available_minor"] == 7000
+    assert client.post(f"/api/v1/campaigns/{campaign_id}/fund", headers=advertiser_headers, json={"amount_minor": 6000}).status_code == 200
+    assert client.get("/api/v1/wallet", headers=advertiser_headers).json()["available_minor"] == 6000
     assert client.post(f"/api/v1/campaigns/{campaign_id}/submit", headers=advertiser_headers).status_code == 200
     assert client.post(f"/api/v1/admin/campaigns/{campaign_id}/review", headers=admin_headers, json={"decision": "approve"}).status_code == 200
     assert client.post(f"/api/v1/campaigns/{campaign_id}/tasks/{task_id}/submit", headers=advertiser_headers).status_code == 200
@@ -306,7 +313,7 @@ def test_verified_deposit_campaign_escrow_and_reward_credit(client):
     assert client.get("/api/v1/wallet", headers=worker_headers).json()["available_minor"] == 5000
     budget = client.get(f"/api/v1/campaigns/{campaign_id}/budget", headers=advertiser_headers)
     assert budget.json()["escrow_balance_minor"] == 0
-    assert budget.json()["spent_minor"] == 5000
+    assert budget.json()["spent_minor"] == 6000
     repeated = client.post(f"/api/v1/admin/submissions/{submission_id}/review", headers=admin_headers, json={"decision": "approve"})
     assert repeated.status_code == 409
 
