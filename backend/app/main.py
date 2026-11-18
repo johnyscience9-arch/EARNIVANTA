@@ -84,6 +84,8 @@ class Task(Base):
     capacity: Mapped[int] = mapped_column(Integer, default=1)
     status: Mapped[str] = mapped_column(String(24), default="draft")
     pinned: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+    category: Mapped[str] = mapped_column(String(32), default="other")
+    client_charge_minor: Mapped[int] = mapped_column(Integer, default=0)
 
 
 class TaskSubmission(Base):
@@ -129,6 +131,17 @@ class DepositRequest(Base):
     reviewed_by: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id"), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
     reviewed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+
+class PricingSettings(Base):
+    __tablename__ = "pricing_settings"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, default=1)
+    commission_percent: Mapped[int] = mapped_column(Integer, default=20)
+    referral_reward_minor: Mapped[int] = mapped_column(Integer, default=500)
+    rates_json: Mapped[str] = mapped_column(Text, default='{"product_feedback":1500,"website_testing":2000,"app_testing":2500,"survey":1000,"data_labeling":1200,"ai_evaluation":1800,"transcription":2000,"other":1000}')
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+
 
 class DailyHeadline(Base):
     __tablename__ = "daily_headlines"
@@ -286,9 +299,9 @@ class CampaignInput(BaseModel):
 
 
 class TaskInput(BaseModel):
+    category: str = Field(default="other", pattern="^(product_feedback|website_testing|app_testing|survey|data_labeling|ai_evaluation|transcription|other)$")
     title: str = Field(min_length=3, max_length=140)
     instructions: str = Field(min_length=10, max_length=2000)
-    reward_minor: int = Field(ge=0, le=100_000_000)
     capacity: int = Field(ge=1, le=100_000)
 
 
@@ -322,6 +335,35 @@ app = FastAPI(title="Earnivanta API", version="0.1.0", description="Initial auth
 app.add_middleware(CORSMiddleware, allow_origins=origins, allow_credentials=True,
                    allow_methods=["GET", "POST", "PATCH", "OPTIONS"], allow_headers=["Authorization", "Content-Type"])
 
+
+
+
+TASK_RATE_DEFAULTS = {"product_feedback":1500,"website_testing":2000,"app_testing":2500,"survey":1000,"data_labeling":1200,"ai_evaluation":1800,"transcription":2000,"other":1000}
+class PricingSettingsInput(BaseModel):
+    commission_percent: int = Field(ge=0, le=200)
+    referral_reward_minor: int = Field(ge=0, le=10000000)
+    rates: dict[str, int]
+
+@app.get("/api/v1/pricing")
+def get_pricing(db: Session = Depends(get_db)):
+    item = db.get(PricingSettings, 1)
+    rates = json.loads(item.rates_json) if item else TASK_RATE_DEFAULTS
+    return {"rates": rates, "commission_percent": item.commission_percent if item else 20, "referral_reward_minor": item.referral_reward_minor if item else 500}
+
+@app.put("/api/v1/admin/pricing")
+def update_pricing(data: PricingSettingsInput, admin: User = Depends(require_roles("admin")), db: Session = Depends(get_db)):
+    if set(data.rates) != set(TASK_RATE_DEFAULTS) or any(v < 0 or v > 10000000 for v in data.rates.values()):
+        raise HTTPException(status_code=422, detail="Provide valid BDT worker rates for every supported task category")
+    item = db.get(PricingSettings, 1)
+    if not item:
+        item = PricingSettings(id=1)
+        db.add(item)
+    item.commission_percent = data.commission_percent
+    item.referral_reward_minor = data.referral_reward_minor
+    item.rates_json = json.dumps(data.rates, separators=(",", ":"))
+    item.updated_at = datetime.now(timezone.utc)
+    db.commit()
+    return {"rates": data.rates, "commission_percent": item.commission_percent, "referral_reward_minor": item.referral_reward_minor}
 
 @app.get("/api/v1/health")
 def health():
@@ -447,11 +489,20 @@ def create_task(campaign_id: int, data: TaskInput, user: User = Depends(require_
         raise HTTPException(status_code=404, detail="Campaign not found")
     if campaign.status != "draft":
         raise HTTPException(status_code=409, detail="Tasks can only be added while campaign is a draft")
-    task = Task(campaign_id=campaign.id, title=data.title.strip(), instructions=data.instructions.strip(), reward_minor=data.reward_minor, capacity=data.capacity)
+    pricing = db.get(PricingSettings, 1)
+    if not pricing:
+        pricing = PricingSettings(id=1)
+        db.add(pricing)
+        db.flush()
+    rates = json.loads(pricing.rates_json)
+    worker_reward = int(rates.get(data.category, rates.get("other", 1000)))
+    commission = max(0, min(200, int(pricing.commission_percent)))
+    client_charge = worker_reward + (worker_reward * commission + 99) // 100
+    task = Task(campaign_id=campaign.id, title=data.title.strip(), instructions=data.instructions.strip(), reward_minor=worker_reward, client_charge_minor=client_charge, category=data.category, capacity=data.capacity)
     db.add(task)
     db.commit()
     db.refresh(task)
-    return {"id": task.id, "campaign_id": task.campaign_id, "title": task.title, "status": task.status}
+    return {"id": task.id, "campaign_id": task.campaign_id, "title": task.title, "category": task.category, "worker_reward_minor": task.reward_minor, "client_charge_minor": task.client_charge_minor, "commission_percent": commission, "status": task.status}
 
 
 @app.get("/api/v1/tasks")
