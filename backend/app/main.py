@@ -485,6 +485,7 @@ def review_submission(submission_id: int, data: SubmissionReviewInput,
     submission.reviewed_at = datetime.now(timezone.utc)
     db.commit()
     return {"id": submission.id, "status": submission.status, "reviewed_by": staff.id,
+            "reward_credited_minor": task.reward_minor if data.decision == "approve" else 0,
             "note": submission.reviewer_note}
 
 
