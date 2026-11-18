@@ -31,4 +31,4 @@ jobs:
       - name: Import API and verify routes
         working-directory: backend
         run: |
-          python -c "from app.main import app; paths={r.path for r in app.routes}; required={'/api/v1/health','/api/v1/auth/register','/api/v1/auth/login','/api/v1/me','/api/v1/campaigns'}; missing=required-paths; assert not missing, f'Missing routes: {missing}'; print('API import OK; required routes present')"
+          python -c "from app.main import app; paths={r.path for r in app.routes}; required={'/api/v1/health','/api/v1/auth/register','/api/v1/auth/login','/api/v1/me','/api/v1/campaigns','/api/v1/campaigns/{campaign_id}/submit','/api/v1/admin/campaigns/{campaign_id}/review','/api/v1/admin/tasks/{task_id}/review','/api/v1/admin/review-queue'}; missing=required-paths; assert not missing, f'Missing routes: {missing}'; print('API import OK; required routes present')"
