@@ -1,3 +1,7 @@
+import os
+import subprocess
+import sys
+
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
@@ -332,3 +336,45 @@ def test_admin_user_directory_and_role_management(client):
     refreshed = client.get("/api/v1/admin/users", headers=admin_headers)
     updated = next(item for item in refreshed.json() if item["id"] == target["id"])
     assert updated["role"] == "maintenance"
+
+
+def test_production_requires_explicit_secret_and_postgres():
+    env = os.environ.copy()
+    env["APP_ENV"] = "production"
+    env.pop("TOKEN_SECRET", None)
+    env.pop("DATABASE_URL", None)
+    missing_secret = subprocess.run(
+        [sys.executable, "-c", "import app.main"],
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+    assert missing_secret.returncode != 0
+    assert "TOKEN_SECRET is required in production" in missing_secret.stderr
+
+    env["TOKEN_SECRET"] = "x" * 48
+    env["DATABASE_URL"] = "sqlite:///./not-for-production.db"
+    sqlite_blocked = subprocess.run(
+        [sys.executable, "-c", "import app.main"],
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+    assert sqlite_blocked.returncode != 0
+    assert "SQLite is not allowed in production" in sqlite_blocked.stderr
+
+
+def test_production_rejects_insecure_cors_origins():
+    env = os.environ.copy()
+    env["APP_ENV"] = "production"
+    env["TOKEN_SECRET"] = "x" * 48
+    env["DATABASE_URL"] = "postgresql+psycopg://user:password@localhost:5432/earnivanta"
+    env["CORS_ORIGINS"] = "*"
+    result = subprocess.run(
+        [sys.executable, "-c", "import app.main"],
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode != 0
+    assert "exact HTTPS frontend origin" in result.stderr
