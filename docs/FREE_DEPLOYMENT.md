@@ -6,12 +6,12 @@ This repository can be developed with free tools. A GitHub repository and GitHub
 
 1. Open the repository: https://github.com/johnyscience9-arch/EARNIVANTA
 2. Open **Settings → Pages**.
-3. Under **Build and deployment**, choose **GitHub Actions** as the source.
-4. Save the setting.
+3. Under **Build and deployment → Source**, choose **GitHub Actions** from the dropdown. Do not click the **GitHub Pages Jekyll** or **Static HTML** cards below; those are starter workflow templates, not the Source selector.
+4. GitHub normally applies the Source selection immediately. If no Save button appears, do not enter a custom domain and do not create a starter workflow. Confirm that the Source field itself displays **GitHub Actions**.
 5. Open **Actions → Deploy Earnivanta website** and confirm the newest run succeeds.
 6. The expected project URL is https://johnyscience9-arch.github.io/EARNIVANTA/ after GitHub reports a successful deployment.
 
-The current Pages workflow stopped at **Configure Pages** because GitHub returned “Get Pages site failed / Not Found”. Enabling Pages with GitHub Actions is the required repository-side step; rerunning the workflow before that setting is fixed will fail again.
+The previous Pages workflow stopped at **Configure Pages** because GitHub returned “Get Pages site failed / Not Found”. This means the repository's Pages site has not yet been provisioned. The current connected GitHub actions available to me can read and commit repository files, but do not expose the repository Pages-settings API or list/dispatch workflow runs. Therefore I cannot honestly claim I have changed that repository setting or verified a new deployment. The account owner must confirm the Source dropdown displays **GitHub Actions**; once it does, a push or manual workflow run can provision/deploy the site.
 
 ## 2. The API is a separate service
 
