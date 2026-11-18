@@ -90,6 +90,20 @@ class WalletEntry(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
 
+class DepositRequest(Base):
+    __tablename__ = "deposit_requests"
+    __table_args__ = (UniqueConstraint("payment_reference", name="uq_deposit_payment_reference"),)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    advertiser_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    amount_minor: Mapped[int] = mapped_column(Integer)
+    method: Mapped[str] = mapped_column(String(24))
+    payment_reference: Mapped[str] = mapped_column(String(120))
+    status: Mapped[str] = mapped_column(String(24), default="pending_review")
+    staff_note: Mapped[Optional[str]] = mapped_column(String(1000), nullable=True)
+    reviewed_by: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id"), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    reviewed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+
 class Withdrawal(Base):
     __tablename__ = "withdrawals"
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
@@ -452,6 +466,18 @@ def review_submission(submission_id: int, data: SubmissionReviewInput,
         raise HTTPException(status_code=404, detail="Submission not found")
     if submission.status != "pending_review":
         raise HTTPException(status_code=409, detail="Submission has already been reviewed")
+    if data.decision == "approve":
+        task = db.scalar(select(Task).where(Task.id == submission.task_id).with_for_update())
+        campaign = db.scalar(select(Campaign).where(Campaign.id == task.campaign_id).with_for_update())
+        if campaign.escrow_balance_minor < task.reward_minor:
+            raise HTTPException(status_code=409, detail="Campaign escrow has insufficient funds; submission remains pending")
+        worker = db.scalar(select(User).where(User.id == submission.worker_id).with_for_update())
+        campaign.escrow_balance_minor -= task.reward_minor
+        campaign.spent_minor += task.reward_minor
+        if task.reward_minor:
+            db.add(WalletEntry(user_id=worker.id, entry_type="credit", amount_minor=task.reward_minor,
+                reference=f"task-submission:{submission.id}:reward",
+                description=f"Approved reward for task submission #{submission.id}", created_by=staff.id))
     submission.status = "approved" if data.decision == "approve" else "rejected"
     submission.reviewer_note = data.reviewer_note.strip() if data.reviewer_note else None
     submission.reviewed_at = datetime.now(timezone.utc)
@@ -459,6 +485,18 @@ def review_submission(submission_id: int, data: SubmissionReviewInput,
     return {"id": submission.id, "status": submission.status, "reviewed_by": staff.id,
             "note": submission.reviewer_note}
 
+
+class DepositInput(BaseModel):
+    amount_minor: int = Field(gt=0, le=100_000_000)
+    method: str = Field(pattern="^(bkash|nagad|bank)$")
+    payment_reference: str = Field(min_length=6, max_length=120)
+
+class DepositReviewInput(BaseModel):
+    decision: str = Field(pattern="^(verify|reject)$")
+    staff_note: Optional[str] = Field(default=None, max_length=1000)
+
+class CampaignFundingInput(BaseModel):
+    amount_minor: int = Field(gt=0, le=100_000_000)
 
 class WithdrawalInput(BaseModel):
     amount_minor: int = Field(gt=0, le=100_000_000)
