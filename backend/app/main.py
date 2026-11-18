@@ -278,7 +278,7 @@ def create_campaign(data: CampaignInput, user: User = Depends(require_roles("adv
 @app.get("/api/v1/campaigns")
 def list_campaigns(user: User = Depends(current_user), db: Session = Depends(get_db)):
     query = select(Campaign).order_by(Campaign.id.desc())
-    if user.role not in {"admin", "reviewer"}:
+    if user.role not in {"admin", "reviewer", "finance"}:
         query = query.where(Campaign.advertiser_id == user.id)
     campaigns = db.scalars(query).all()
     return [{"id": c.id, "title": c.title, "objective": c.objective, "status": c.status} for c in campaigns]
@@ -558,7 +558,7 @@ def fund_campaign(campaign_id: int, data: CampaignFundingInput, advertiser: User
 @app.get("/api/v1/campaigns/{campaign_id}/budget")
 def campaign_budget(campaign_id: int, user: User = Depends(current_user), db: Session = Depends(get_db)):
     campaign = db.get(Campaign, campaign_id)
-    if not campaign or (user.role not in {"admin", "reviewer"} and campaign.advertiser_id != user.id):
+    if not campaign or (user.role not in {"admin", "reviewer", "finance"} and campaign.advertiser_id != user.id):
         raise HTTPException(status_code=404, detail="Campaign not found")
     return {"campaign_id": campaign.id, "escrow_balance_minor": campaign.escrow_balance_minor, "spent_minor": campaign.spent_minor, "currency": "BDT"}
 
