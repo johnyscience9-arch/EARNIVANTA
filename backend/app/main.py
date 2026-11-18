@@ -59,6 +59,8 @@ class User(Base):
     role: Mapped[str] = mapped_column(String(24), default="member")
     active: Mapped[bool] = mapped_column(Boolean, default=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    referral_code: Mapped[Optional[str]] = mapped_column(String(16), unique=True, index=True, nullable=True)
+    referred_by_id: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id"), nullable=True)
 
 
 class Campaign(Base):
@@ -134,6 +136,17 @@ class DepositRequest(Base):
 
 
 
+class Referral(Base):
+    __tablename__ = "referrals"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    referrer_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    referred_user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), unique=True, index=True)
+    reward_minor: Mapped[int] = mapped_column(Integer, default=0)
+    status: Mapped[str] = mapped_column(String(20), default="pending")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    credited_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
 class PricingSettings(Base):
     __tablename__ = "pricing_settings"
     id: Mapped[int] = mapped_column(Integer, primary_key=True, default=1)
@@ -194,6 +207,12 @@ if "payment_destination_id" not in {c["name"] for c in inspect(engine).get_colum
 if "proof_image_data" not in {c["name"] for c in inspect(engine).get_columns("deposit_requests")}:
     with engine.begin() as conn:
         conn.execute(text("ALTER TABLE deposit_requests ADD COLUMN proof_image_data TEXT"))
+if "referral_code" not in {c["name"] for c in inspect(engine).get_columns("users")}:
+    with engine.begin() as conn:
+        conn.execute(text("ALTER TABLE users ADD COLUMN referral_code VARCHAR(16)"))
+if "referred_by_id" not in {c["name"] for c in inspect(engine).get_columns("users")}:
+    with engine.begin() as conn:
+        conn.execute(text("ALTER TABLE users ADD COLUMN referred_by_id INTEGER"))
 if "pinned" not in {c["name"] for c in inspect(engine).get_columns("tasks")}:
     with engine.begin() as conn:
         conn.execute(text("ALTER TABLE tasks ADD COLUMN pinned BOOLEAN NOT NULL DEFAULT FALSE"))
@@ -290,6 +309,7 @@ def require_roles(*roles: str):
 
 
 class RegisterInput(BaseModel):
+    referral_code: Optional[str] = Field(default=None, min_length=4, max_length=16)
     email: EmailStr
     display_name: str = Field(min_length=2, max_length=80)
     password: str = Field(min_length=10, max_length=128)
@@ -340,7 +360,7 @@ def payment_destination_public(item: PaymentDestination):
 
 app = FastAPI(title="Earnivanta API", version="0.1.0", description="Initial authentication and campaign foundation.")
 app.add_middleware(CORSMiddleware, allow_origins=origins, allow_credentials=True,
-                   allow_methods=["GET", "POST", "PATCH", "OPTIONS"], allow_headers=["Authorization", "Content-Type"])
+                   allow_methods=["GET", "POST", "PUT", "PATCH", "OPTIONS"], allow_headers=["Authorization", "Content-Type"])
 
 
 
@@ -371,6 +391,18 @@ def update_pricing(data: PricingSettingsInput, admin: User = Depends(require_rol
     item.updated_at = datetime.now(timezone.utc)
     db.commit()
     return {"rates": data.rates, "commission_percent": item.commission_percent, "referral_reward_minor": item.referral_reward_minor}
+
+
+
+@app.get("/api/v1/referrals")
+def my_referrals(user: User = Depends(current_user), db: Session = Depends(get_db)):
+    rows = db.scalars(select(Referral).where(Referral.referrer_id == user.id).order_by(Referral.id.desc())).all()
+    settings = db.get(PricingSettings, 1)
+    return {"referral_code": user.referral_code, "reward_minor": settings.referral_reward_minor if settings else 500,
+            "total": len(rows), "credited": sum(1 for r in rows if r.status == "credited"),
+            "earned_minor": sum(r.reward_minor for r in rows if r.status == "credited"),
+            "referrals": [{"id": r.id, "status": r.status, "reward_minor": r.reward_minor,
+                           "created_at": r.created_at.isoformat()} for r in rows]}
 
 @app.get("/api/v1/health")
 def health():
@@ -446,10 +478,19 @@ def register(data: RegisterInput, db: Session = Depends(get_db)):
     email = str(data.email).lower().strip()
     if db.scalar(select(User).where(User.email == email)):
         raise HTTPException(status_code=409, detail="An account with this email already exists")
-    user = User(email=email, display_name=data.display_name.strip(), password_hash=hash_password(data.password), role="member")
+    referrer = None
+    if data.referral_code:
+        referrer = db.scalar(select(User).where(User.referral_code == data.referral_code.strip().upper(), User.active == True))
+        if not referrer:
+            raise HTTPException(status_code=422, detail="Referral code is invalid")
+    user = User(email=email, display_name=data.display_name.strip(), password_hash=hash_password(data.password), role="member",
+                referral_code=secrets.token_hex(4).upper(), referred_by_id=(referrer.id if referrer else None))
     db.add(user)
     db.commit()
     db.refresh(user)
+    if referrer:
+        db.add(Referral(referrer_id=referrer.id, referred_user_id=user.id, status="pending"))
+        db.commit()
     return {"access_token": create_token(user), "token_type": "bearer", "user": user_public(user)}
 
 
@@ -463,7 +504,7 @@ def login(data: LoginInput, db: Session = Depends(get_db)):
 
 
 def user_public(user: User):
-    return {"id": user.id, "email": user.email, "display_name": user.display_name, "role": user.role, "active": user.active}
+    return {"id": user.id, "email": user.email, "display_name": user.display_name, "role": user.role, "active": user.active, "referral_code": user.referral_code}
 
 
 @app.get("/api/v1/me")
@@ -706,15 +747,30 @@ def review_submission(submission_id: int, data: SubmissionReviewInput,
     if data.decision == "approve":
         task = db.scalar(select(Task).where(Task.id == submission.task_id).with_for_update())
         campaign = db.scalar(select(Campaign).where(Campaign.id == task.campaign_id).with_for_update())
-        if campaign.escrow_balance_minor < task.reward_minor:
+        if campaign.escrow_balance_minor < (task.client_charge_minor or task.reward_minor):
             raise HTTPException(status_code=409, detail="Campaign escrow has insufficient funds; submission remains pending")
         worker = db.scalar(select(User).where(User.id == submission.worker_id).with_for_update())
-        campaign.escrow_balance_minor -= task.reward_minor
-        campaign.spent_minor += task.reward_minor
+        campaign.escrow_balance_minor -= (task.client_charge_minor or task.reward_minor)
+        campaign.spent_minor += (task.client_charge_minor or task.reward_minor)
         if task.reward_minor:
             db.add(WalletEntry(user_id=worker.id, entry_type="credit", amount_minor=task.reward_minor,
                 reference=f"task-submission:{submission.id}:reward",
                 description=f"Approved reward for task submission #{submission.id}", created_by=staff.id))
+
+        referral = db.scalar(select(Referral).where(Referral.referred_user_id == worker.id, Referral.status == "pending").with_for_update())
+        if referral:
+            settings = db.get(PricingSettings, 1)
+            referral_reward = int(settings.referral_reward_minor if settings else 500)
+            referrer = db.scalar(select(User).where(User.id == referral.referrer_id).with_for_update())
+            if referrer and referrer.active and referral_reward > 0:
+                referral.reward_minor = referral_reward
+                referral.status = "credited"
+                referral.credited_at = datetime.now(timezone.utc)
+                db.add(WalletEntry(user_id=referrer.id, entry_type="credit", amount_minor=referral_reward,
+                    reference=f"referral:{referral.id}:reward",
+                    description=f"Verified referral reward for member #{worker.id}", created_by=staff.id))
+            else:
+                referral.status = "ineligible"
     submission.status = "approved" if data.decision == "approve" else "rejected"
     submission.reviewer_note = data.reviewer_note.strip() if data.reviewer_note else None
     submission.reviewed_at = datetime.now(timezone.utc)
