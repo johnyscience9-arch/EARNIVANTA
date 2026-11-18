@@ -16,10 +16,11 @@ The public website and a connected API client portal are in the repository:
 - `finance.html` — separate finance operations console.
 - `payment-settings.html` — separate payment destination administration.
 - `add-funds.html` — standalone manual deposit claim page.
-- `backend/` — FastAPI development API, SQLAlchemy models and workflow integration tests.
+- `backend/` — FastAPI API, SQLAlchemy models, PostgreSQL driver, Dockerfile, local environment example and workflow integration tests.
+- `render.yaml` — API hosting blueprint for a Python web service; a persistent PostgreSQL URL and first-admin bootstrap credentials must be supplied privately.
 - `.github/workflows/` — GitHub Pages deployment, backend checks and frontend JavaScript validation.
 
-The public frontend is hosted by GitHub Pages. The API is a separate service and **has not been deployed or connected to a production database yet**. The portal asks for an API base URL; until an API service is deployed and configured, sign-up, sign-in, wallet and operational actions cannot work online.
+The public frontend is hosted by GitHub Pages. The API is a separate service and **has not been deployed or connected to a production database yet**. The repository now includes a hosting blueprint and production startup guards, but these do not create a hosting account or database automatically. The portal asks for an API base URL; until an API service is deployed and configured, sign-up, sign-in, wallet and operational actions cannot work online.
 
 ## What is implemented in the API foundation
 
@@ -33,7 +34,7 @@ The public frontend is hosted by GitHub Pages. The API is a separate service and
 ## Not yet ready for public business operation
 
 This repository is **not a production-ready marketplace**. The following are still required before accepting real users or money:
-- Deploy the API and managed PostgreSQL database; configure a strong secret, exact CORS origins, backups and monitoring.
+- Deploy the API and managed PostgreSQL database using `render.yaml`; configure a strong secret, exact CORS origins, backups and monitoring.
 - Production security work: rate limiting, email verification, password reset, token revocation, audit logs, database migrations, CSRF strategy and security review.
 - A complete user/staff directory and permission assignment interface; role assignment currently requires a known user ID.
 - A real project-order workflow, quote/milestone/delivery tracking and live support chat.
