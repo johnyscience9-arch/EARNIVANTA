@@ -33,6 +33,13 @@ if APP_ENV == "production":
         raise RuntimeError("TOKEN_SECRET must contain at least 32 characters in production")
     if DATABASE_URL.startswith("sqlite"):
         raise RuntimeError("SQLite is not allowed in production; configure managed PostgreSQL")
+cors_value = os.getenv("CORS_ORIGINS", "http://localhost:5500,http://127.0.0.1:5500")
+origins = [x.strip().rstrip("/") for x in cors_value.split(",") if x.strip()]
+if APP_ENV == "production":
+    if not origins or any(origin == "*" for origin in origins):
+        raise RuntimeError("Set CORS_ORIGINS to the exact HTTPS frontend origin(s) in production")
+    if any(not origin.startswith("https://") for origin in origins):
+        raise RuntimeError("Production CORS_ORIGINS must contain HTTPS origins only")
 
 connect_args = {"check_same_thread": False} if DATABASE_URL.startswith("sqlite") else {}
 engine = create_engine(DATABASE_URL, connect_args=connect_args, pool_pre_ping=True)
@@ -284,13 +291,6 @@ def payment_destination_public(item: PaymentDestination):
 
 
 app = FastAPI(title="Earnivanta API", version="0.1.0", description="Initial authentication and campaign foundation.")
-cors_value = os.getenv("CORS_ORIGINS", "http://localhost:5500,http://127.0.0.1:5500")
-origins = [x.strip().rstrip("/") for x in cors_value.split(",") if x.strip()]
-if APP_ENV == "production":
-    if not origins or any(origin == "*" for origin in origins):
-        raise RuntimeError("Set CORS_ORIGINS to the exact HTTPS frontend origin(s) in production")
-    if any(not origin.startswith("https://") for origin in origins):
-        raise RuntimeError("Production CORS_ORIGINS must contain HTTPS origins only")
 app.add_middleware(CORSMiddleware, allow_origins=origins, allow_credentials=True,
                    allow_methods=["GET", "POST", "PATCH", "OPTIONS"], allow_headers=["Authorization", "Content-Type"])
 
