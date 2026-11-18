@@ -772,7 +772,7 @@ def review_submission(submission_id: int, data: SubmissionReviewInput,
                 description=f"Approved reward for task submission #{submission.id}", created_by=staff.id))
 
         referral = db.scalar(select(Referral).where(Referral.referred_user_id == worker.id, Referral.status == "pending").with_for_update())
-        if referral:
+        if referral and task.reward_minor > 0:
             settings = db.get(PricingSettings, 1)
             referral_reward = int(settings.referral_reward_minor if settings else 500)
             referrer = db.scalar(select(User).where(User.id == referral.referrer_id).with_for_update())
