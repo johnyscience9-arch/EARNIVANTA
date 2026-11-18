@@ -2,58 +2,71 @@
 
 **Work. Promote. Build. Grow.**
 
-Earnivanta is a digital marketplace project for:
-- Workers: lawful research, product testing, feedback and real task opportunities.
-- Advertisers: genuine awareness, voluntary participation and consent-based lead generation.
-- Businesses and individuals: custom websites, Android applications and Windows software.
-- Platform operations: human review of campaigns, task evidence and manual payment records.
+Earnivanta is a bilingual digital work and promotion platform prototype for genuine research, product feedback, consent-based lead generation, advertiser campaigns, and custom digital services.
 
-## Current repository status
+## Live services
 
-The public website and a connected API client portal are in the repository:
-- `index.html` — bilingual English/Bangla public landing page.
-- `portal.html` — member sign-up/sign-in, wallet, task feed and evidence submission, advertiser campaign drafts, deposit claims, admin/reviewer queues, finance queues and payment destination settings.
-- `finance.html` — separate finance operations console.
-- `payment-settings.html` — separate payment destination administration.
-- `add-funds.html` — standalone manual deposit claim page.
-- `backend/` — FastAPI API, SQLAlchemy models, PostgreSQL driver, Dockerfile, local environment example and workflow integration tests.
-- `render.yaml` — API hosting blueprint for a Python web service; a persistent PostgreSQL URL and first-admin bootstrap credentials must be supplied privately.
-- `.github/workflows/` — GitHub Pages deployment, backend checks and frontend JavaScript validation.
+- Public website: https://johnyscience9-arch.github.io/EARNIVANTA/
+- Member portal: https://johnyscience9-arch.github.io/EARNIVANTA/portal.html
+- Finance console: https://johnyscience9-arch.github.io/EARNIVANTA/finance.html
+- Payment destination settings: https://johnyscience9-arch.github.io/EARNIVANTA/payment-settings.html
+- Add funds: https://johnyscience9-arch.github.io/EARNIVANTA/add-funds.html
+- API health: https://earnivanta-api-ozq5.onrender.com/api/v1/health
+- API docs: https://earnivanta-api-ozq5.onrender.com/docs
 
-The public frontend is hosted by GitHub Pages. The API is a separate service and **has not been deployed or connected to a production database yet**. The repository now includes a hosting blueprint and production startup guards, but these do not create a hosting account or database automatically. The portal asks for an API base URL; until an API service is deployed and configured, sign-up, sign-in, wallet and operational actions cannot work online.
+The frontend is deployed by GitHub Pages. The FastAPI backend is deployed on Render and connects to the Supabase PostgreSQL project. The member portal now has the live API base URL preconfigured; users do not need to enter it manually.
 
-## What is implemented in the API foundation
+## Repository map
 
-- Registration and login with PBKDF2-HMAC-SHA256 password hashes and signed expiring bearer tokens.
-- Role-protected member, advertiser, maintenance, reviewer, finance and admin routes.
-- Campaign and task draft creation, moderation, worker evidence and reviewer decisions.
-- Append-only wallet ledger, manual deposit claims, campaign escrow, reward credit on approved evidence, withdrawal holds and manual processing.
-- Admin-managed bKash, Nagad, Rocket, Upay, bank and other payment destinations.
-- Integration tests for campaign/task/submission lifecycle, wallet/withdrawal lifecycle and verified deposit/escrow/reward lifecycle.
+- `index.html` — public bilingual landing page.
+- `portal.html` — registration/login, member wallet, tasks and submissions, advertiser campaign and funding flows, admin/reviewer queues, finance queues, user-role and payment destination administration.
+- `finance.html` — finance operations console.
+- `payment-settings.html` — payment destination administration.
+- `add-funds.html` — manual deposit claim page.
+- `backend/` — FastAPI, SQLAlchemy models, authentication, campaign/task moderation, submissions, wallet ledger, manual deposit verification, campaign escrow and manual withdrawals.
+- `render.yaml` — Render service blueprint.
+- `.github/workflows/` — Pages deployment and frontend/backend validation workflows.
 
-## Not yet ready for public business operation
+## Implemented API features
 
-This repository is **not a production-ready marketplace**. The following are still required before accepting real users or money:
-- Deploy the API and managed PostgreSQL database using `render.yaml`; configure a strong secret, exact CORS origins, backups and monitoring.
-- Production security work: rate limiting, email verification, password reset, token revocation, audit logs, database migrations, CSRF strategy and security review.
-- A complete user/staff directory and permission assignment interface; role assignment currently requires a known user ID.
-- A real project-order workflow, quote/milestone/delivery tracking and live support chat.
-- KYC workflow and legal/privacy review. Do not upload NID/passport images or sensitive identity documents to the current API.
-- Payment reconciliation against actual merchant transaction history. No bKash/Nagad gateway or automatic payment verification exists.
-- Production payout operations, customer support and dispute/refund policy.
-- End-to-end tests against a deployed staging API and accessibility/security testing.
+- Email/password registration and login; PBKDF2-HMAC-SHA256 password hashing and signed expiring bearer tokens.
+- Role-based authorization for member, advertiser, reviewer, finance and admin operations.
+- Campaign and task creation, review, publishing and participant evidence submissions.
+- Wallet balance and transaction history backed by an append-only ledger.
+- Manual deposit claims, staff verification, advertiser wallet credits and campaign budget escrow.
+- Reward credit from funded campaign escrow after staff approves task evidence.
+- Withdrawal requests with reserved funds and manual finance processing.
+- Admin-managed payment destinations for manual payment instructions.
 
-Do not collect real money, joining fees or identity documents through the current prototype. Do not promise income. Any future joining fee must pay for a clearly disclosed real service and must never fund other members or recruitment rewards.
+## Release checks completed
 
-## Campaign integrity
+- Render API deployment reports `live`.
+- Render service logs show repeated `GET /api/v1/health` responses with `200 OK`.
+- Supabase project reports `ACTIVE_HEALTHY`.
+- GitHub Pages deployment workflow succeeded for the latest frontend commit.
+- Frontend validation workflow succeeded, including inline JavaScript syntax checks for all five HTML pages.
+- Backend checks passed on the latest backend commit.
 
-Do not publish artificial likes, follows, subscribers, views, fabricated reviews, deceptive platform manipulation or undisclosed engagement. Use compliant advertising, voluntary research, honest product feedback, consent-based leads and genuine work.
+See [docs/RELEASE_STATUS.md](docs/RELEASE_STATUS.md) for the verification scope and remaining production gates.
 
-## Deploy
+## Important limits — not ready for real-money public operation
 
-GitHub Pages publishes the static website from `main` using `.github/workflows/pages.yml`. The API is not deployed by that workflow. Backend deployment instructions and environment requirements are in [backend/README.md](backend/README.md) and [docs/FREE_DEPLOYMENT.md](docs/FREE_DEPLOYMENT.md).
+This is a deployed prototype, not a fully audited financial marketplace. The following still require implementation or independent verification before public launch:
+- Email verification and secure password reset delivery.
+- Rate limiting, token revocation, audit logging and formal database migrations.
+- Backup/restore testing, monitoring and a security review.
+- Payment reconciliation against actual merchant transaction records; no bKash/Nagad automatic gateway or automatic verification is connected.
+- Dispute/refund procedures, operational support and legal/privacy review.
+- End-to-end testing of every role and payment path against production data.
 
-## Tests
+Do not collect joining fees, deposits or identity documents, and do not promise earnings until those controls and operating procedures are completed. Only publish lawful work with real value. Do not support fake likes, follows, views, subscribers, fabricated reviews or deceptive platform manipulation.
 
-- Frontend: GitHub Actions extracts and syntax-checks every inline JavaScript block in all five HTML pages with Node.js.
-- Backend: GitHub Actions compiles the FastAPI app and runs the integration test suite with pytest.
+## Local development
+
+From the `backend` folder, create a Python 3.12 virtual environment, install `requirements.txt`, copy `.env.example` to `.env`, and run:
+
+```bash
+uvicorn app.main:app --reload
+```
+
+Run backend tests from `backend` using `pytest -q`.
