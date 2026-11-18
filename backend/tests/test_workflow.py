@@ -272,8 +272,15 @@ def test_verified_deposit_campaign_escrow_and_reward_credit(client):
     assert pricing.status_code == 200, pricing.text
     advertiser_token = register(client, "escrow-advertiser@example.com", "Escrow Advertiser")
     advertiser_headers = {"Authorization": f"Bearer {advertiser_token}"}
-    worker_token = register(client, "escrow-worker@example.com", "Escrow Worker")
-    worker_headers = {"Authorization": f"Bearer {worker_token}"}
+    referrer_token = register(client, "referrer@example.com", "Referrer")
+    referrer_headers = {"Authorization": f"Bearer {referrer_token}"}
+    referrer_code = client.get("/api/v1/me", headers=referrer_headers).json()["referral_code"]
+    referred = client.post("/api/v1/auth/register", json={
+        "email": "escrow-worker@example.com", "display_name": "Escrow Worker",
+        "password": "strong-test-password", "referral_code": referrer_code,
+    })
+    assert referred.status_code == 201, referred.text
+    worker_headers = {"Authorization": f"Bearer {referred.json()['access_token']}"} 
     assert client.post("/api/v1/admin/users/2/role?role=advertiser", headers=admin_headers).status_code == 200
     deposit = client.post("/api/v1/deposits", headers=advertiser_headers, json={
         "amount_minor": 12000, "method": "bkash", "payment_reference": "BKASH-VERIFY-12345"
@@ -310,6 +317,10 @@ def test_verified_deposit_campaign_escrow_and_reward_credit(client):
     paid = client.post(f"/api/v1/admin/submissions/{submission_id}/review", headers=admin_headers, json={"decision": "approve"})
     assert paid.status_code == 200, paid.text
     assert paid.json()["reward_credited_minor"] == 5000
+    referral_result = client.get("/api/v1/referrals", headers=referrer_headers)
+    assert referral_result.status_code == 200
+    assert referral_result.json()["credited"] == 1
+    assert referral_result.json()["earned_minor"] == 700
     assert client.get("/api/v1/wallet", headers=worker_headers).json()["available_minor"] == 5000
     budget = client.get(f"/api/v1/campaigns/{campaign_id}/budget", headers=advertiser_headers)
     assert budget.json()["escrow_balance_minor"] == 0
