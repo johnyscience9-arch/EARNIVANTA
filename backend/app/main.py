@@ -482,20 +482,21 @@ def wallet_totals(db: Session, user_id: int):
     entries = db.scalars(select(WalletEntry).where(WalletEntry.user_id == user_id)).all()
     available = 0
     credited = 0
-    withdrawn = 0
+    reserved_or_debited = 0
     for entry in entries:
         if entry.entry_type == "credit":
             available += entry.amount_minor
             credited += entry.amount_minor
         elif entry.entry_type == "debit":
             available -= entry.amount_minor
-            withdrawn += entry.amount_minor
+            reserved_or_debited += entry.amount_minor
         elif entry.entry_type == "hold":
             available -= entry.amount_minor
-            withdrawn += entry.amount_minor
+            reserved_or_debited += entry.amount_minor
         elif entry.entry_type == "release":
             available += entry.amount_minor
-    return {"available_minor": available, "credited_minor": credited, "reserved_or_debited_minor": withdrawn, "currency": "BDT"}
+            reserved_or_debited -= entry.amount_minor
+    return {"available_minor": available, "credited_minor": credited, "reserved_or_debited_minor": reserved_or_debited, "currency": "BDT"}
 
 
 @app.get("/api/v1/wallet")
