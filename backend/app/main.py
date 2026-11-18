@@ -231,6 +231,17 @@ if "payout_proof_image" not in {c["name"] for c in inspect(engine).get_columns("
         conn.execute(text("ALTER TABLE withdrawals ADD COLUMN payout_proof_image TEXT"))
 
 
+with SessionLocal() as db:
+    existing_users = db.scalars(select(User).where(User.referral_code.is_(None))).all()
+    for existing_user in existing_users:
+        code = secrets.token_hex(4).upper()
+        while db.scalar(select(User.id).where(User.referral_code == code)):
+            code = secrets.token_hex(4).upper()
+        existing_user.referral_code = code
+    if existing_users:
+        db.commit()
+
+
 def get_db():
     db = SessionLocal()
     try:
