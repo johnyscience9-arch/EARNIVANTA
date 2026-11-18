@@ -135,6 +135,16 @@ def test_campaign_task_and_worker_submission_lifecycle(client):
     )
     assert duplicate.status_code == 409
 
+    second_worker_token = register(client, "second-worker@example.test", "Second Worker")
+    second_worker_headers = {"Authorization": f"Bearer {second_worker_token}"}
+    capacity_check = client.post(
+        f"/api/v1/tasks/{task_id}/submissions",
+        headers=second_worker_headers,
+        json={"evidence_text": "I completed the task and have provided my feedback."},
+    )
+    assert capacity_check.status_code == 409
+    assert "participant limit" in capacity_check.json()["detail"]
+
     queue = client.get("/api/v1/admin/submissions", headers=admin_headers)
     assert queue.status_code == 200
     assert any(item["id"] == submission_id for item in queue.json())
