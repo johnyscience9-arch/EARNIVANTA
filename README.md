@@ -45,3 +45,7 @@ Open `index.html` in a modern browser. This first version uses no external libra
 ## Architecture contract
 
 The detailed platform architecture, role permissions, data model, workflow states, privacy requirements and API boundary are documented in [`docs/PLATFORM_BLUEPRINT.md`](docs/PLATFORM_BLUEPRINT.md). This is the implementation contract for subsequent backend and client work.
+
+## Backend foundation
+
+A local-development FastAPI backend now lives in [`backend/`](backend/). It includes registration/login, signed bearer tokens, role checks, advertiser campaign drafts and a backend CI validation workflow. Follow [`backend/README.md`](backend/README.md) to run it locally. This is an early development foundation, not a production payment/KYC service; real payments, identity uploads, wallet settlement and live chat are not enabled.
