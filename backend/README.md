@@ -7,6 +7,7 @@
 - Signed, expiring bearer tokens.
 - Role-protected advertiser campaign and draft-task creation.
 - Campaign submission and reviewer/admin approval or rejection.
+- Worker task evidence submission, one submission per worker/task, participant-capacity checks, and reviewer/admin approval or rejection.
 - Task submission and reviewer/admin approval or rejection; workers only see published tasks under active campaigns.
 - Admin role assignment endpoint; first admin can be bootstrapped with environment variables.
 - SQLite for local development; SQLAlchemy supports a separately configured database URL.
@@ -39,6 +40,15 @@ Open `http://127.0.0.1:8000/docs` for the interactive API reference.
 Campaigns move from `draft` to `pending_review`, then to `active` or `rejected`. Tasks move from `draft` to `pending_review`, then to `published` or `rejected`.
 
 Only approve campaigns and tasks that are lawful, accurately described, properly funded, and safe for participants. Do not approve fake engagement, fabricated reviews, misleading claims, or tasks that require users to deceive platforms or other people.
+
+## Worker evidence flow
+
+- Workers with the `member` or `maintenance` role can view published tasks and submit evidence using `POST /api/v1/tasks/{task_id}/submissions`.
+- Evidence consists of a short written explanation and an optional reference URL. Do not upload identity documents or sensitive personal data as task evidence.
+- A worker can submit once per task. Pending and approved submissions count toward the task participant capacity.
+- Workers can see their own submission history at `GET /api/v1/my/submissions`.
+- Admins/reviewers can inspect pending evidence at `GET /api/v1/admin/submissions` and decide with `POST /api/v1/admin/submissions/{submission_id}/review`, sending `{"decision":"approve","reviewer_note":"..."}` or `{"decision":"reject","reviewer_note":"..."}`.
+- Approval records task completion only. It does not credit a wallet or promise a payout; a separately audited payment ledger and funded reward process are still required.
 
 ## Important deployment requirements
 
