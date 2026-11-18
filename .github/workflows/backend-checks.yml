@@ -28,6 +28,15 @@ jobs:
           pip install -r backend/requirements.txt pytest==8.3.5 httpx==0.28.1
       - name: Compile backend
         run: python -m compileall -q backend/app backend/tests
+      - name: Validate deployment assets
+        run: |
+          test -s render.yaml
+          test -s backend/Dockerfile
+          test -s backend/.env.example
+          grep -q 'TOKEN_SECRET' render.yaml
+          grep -q 'healthCheckPath: /api/v1/health' render.yaml
+      - name: Build API container
+        run: docker build -t earnivanta-api:ci backend
       - name: Import API and verify routes
         working-directory: backend
         run: |
