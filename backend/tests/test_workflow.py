@@ -90,6 +90,14 @@ def test_campaign_task_and_worker_submission_lifecycle(client):
     assert task_response.status_code == 201, task_response.text
     task_id = task_response.json()["id"]
 
+    seed_funds = client.post("/api/v1/admin/wallet/adjust", headers=admin_headers, json={
+        "user_id": 2, "direction": "credit", "amount_minor": 5000,
+        "reference": "lifecycle-campaign-fund", "description": "Test-only campaign funding",
+    })
+    assert seed_funds.status_code == 200, seed_funds.text
+    assert client.post(f"/api/v1/campaigns/{campaign_id}/fund", headers=advertiser_headers,
+                       json={"amount_minor": 5000}).status_code == 200
+
     assert client.post(
         f"/api/v1/campaigns/{campaign_id}/submit",
         headers=advertiser_headers,
