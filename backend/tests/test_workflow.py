@@ -160,3 +160,89 @@ def test_campaign_task_and_worker_submission_lifecycle(client):
     my_submissions = client.get("/api/v1/my/submissions", headers=worker_headers)
     assert my_submissions.status_code == 200
     assert my_submissions.json()[0]["status"] == "approved"
+
+
+
+def test_wallet_ledger_and_manual_withdrawal_lifecycle(client):
+    admin_login = client.post("/api/v1/auth/login", json={
+        "email": "admin@example.test",
+        "password": "test-admin-password",
+    })
+    assert admin_login.status_code == 200
+    admin_headers = {"Authorization": f"Bearer {admin_login.json()['access_token']}"}
+    worker_token = register(client, "wallet-worker@example.test", "Wallet Worker")
+    worker_headers = {"Authorization": f"Bearer {worker_token}"}
+
+    initial = client.get("/api/v1/wallet", headers=worker_headers)
+    assert initial.status_code == 200
+    assert initial.json()["available_minor"] == 0
+
+    credit = client.post("/api/v1/admin/wallet/adjust", headers=admin_headers, json={
+        "user_id": 2,
+        "direction": "credit",
+        "amount_minor": 15000,
+        "reference": "manual-credit-0001",
+        "description": "Verified pilot reward funding",
+    })
+    assert credit.status_code == 200, credit.text
+
+    duplicate_reference = client.post("/api/v1/admin/wallet/adjust", headers=admin_headers, json={
+        "user_id": 2,
+        "direction": "credit",
+        "amount_minor": 15000,
+        "reference": "manual-credit-0001",
+        "description": "Duplicate funding attempt",
+    })
+    assert duplicate_reference.status_code == 409
+
+    insufficient = client.post("/api/v1/withdrawals", headers=worker_headers, json={"amount_minor": 16000})
+    assert insufficient.status_code == 409
+
+    first_request = client.post("/api/v1/withdrawals", headers=worker_headers, json={"amount_minor": 10000})
+    assert first_request.status_code == 201, first_request.text
+    withdrawal_id = first_request.json()["id"]
+    after_hold = client.get("/api/v1/wallet", headers=worker_headers)
+    assert after_hold.json()["available_minor"] == 5000
+
+    queue = client.get("/api/v1/admin/withdrawals", headers=admin_headers)
+    assert queue.status_code == 200
+    assert any(item["id"] == withdrawal_id for item in queue.json())
+
+    rejected = client.post(
+        f"/api/v1/admin/withdrawals/{withdrawal_id}/process",
+        headers=admin_headers,
+        json={"decision": "reject", "staff_note": "Pilot test rejection; reserved funds released."},
+    )
+    assert rejected.status_code == 200
+    after_release = client.get("/api/v1/wallet", headers=worker_headers)
+    assert after_release.json()["available_minor"] == 15000
+
+    second_request = client.post("/api/v1/withdrawals", headers=worker_headers, json={"amount_minor": 15000})
+    assert second_request.status_code == 201
+    paid_id = second_request.json()["id"]
+    paid = client.post(
+        f"/api/v1/admin/withdrawals/{paid_id}/process",
+        headers=admin_headers,
+        json={"decision": "pay", "payout_reference": "TEST-PAYOUT-REF-001", "staff_note": "Test payout only."},
+    )
+    assert paid.status_code == 200
+    assert paid.json()["status"] == "paid"
+
+    duplicate_process = client.post(
+        f"/api/v1/admin/withdrawals/{paid_id}/process",
+        headers=admin_headers,
+        json={"decision": "pay", "payout_reference": "TEST-PAYOUT-REF-002"},
+    )
+    assert duplicate_process.status_code == 409
+
+    final_wallet = client.get("/api/v1/wallet", headers=worker_headers)
+    assert final_wallet.status_code == 200
+    assert final_wallet.json()["available_minor"] == 0
+
+    ledger = client.get("/api/v1/wallet/transactions", headers=worker_headers)
+    assert ledger.status_code == 200
+    assert len(ledger.json()) == 4
+
+    own_withdrawals = client.get("/api/v1/withdrawals", headers=worker_headers)
+    assert own_withdrawals.status_code == 200
+    assert [item["status"] for item in own_withdrawals.json()] == ["paid", "rejected"]
