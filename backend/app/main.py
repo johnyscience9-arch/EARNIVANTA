@@ -146,6 +146,7 @@ class Withdrawal(Base):
     currency: Mapped[str] = mapped_column(String(3), default="BDT")
     status: Mapped[str] = mapped_column(String(24), default="pending")
     payout_reference: Mapped[Optional[str]] = mapped_column(String(120), nullable=True)
+    payout_proof_image: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     staff_note: Mapped[Optional[str]] = mapped_column(String(1000), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
     processed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
@@ -175,6 +176,9 @@ if "proof_image_data" not in {c["name"] for c in inspect(engine).get_columns("de
 if "pinned" not in {c["name"] for c in inspect(engine).get_columns("tasks")}:
     with engine.begin() as conn:
         conn.execute(text("ALTER TABLE tasks ADD COLUMN pinned BOOLEAN NOT NULL DEFAULT FALSE"))
+if "payout_proof_image" not in {c["name"] for c in inspect(engine).get_columns("withdrawals")}:
+    with engine.begin() as conn:
+        conn.execute(text("ALTER TABLE withdrawals ADD COLUMN payout_proof_image TEXT"))
 
 
 def get_db():
@@ -758,6 +762,7 @@ class WalletAdjustmentInput(BaseModel):
 class WithdrawalDecisionInput(BaseModel):
     decision: str = Field(pattern="^(pay|reject)$")
     payout_reference: Optional[str] = Field(default=None, min_length=4, max_length=120)
+    payout_proof_image: Optional[str] = Field(default=None, max_length=1_500_000)
     staff_note: Optional[str] = Field(default=None, max_length=1000)
 
 
@@ -817,8 +822,9 @@ def request_withdrawal(data: WithdrawalInput, user: User = Depends(require_roles
 def my_withdrawals(user: User = Depends(current_user), db: Session = Depends(get_db)):
     rows = db.scalars(select(Withdrawal).where(Withdrawal.user_id == user.id).order_by(Withdrawal.id.desc())).all()
     return [{"id": w.id, "amount_minor": w.amount_minor, "currency": w.currency, "status": w.status,
-             "staff_note": w.staff_note, "created_at": w.created_at.isoformat(),
-             "processed_at": w.processed_at.isoformat() if w.processed_at else None} for w in rows]
+             "staff_note": w.staff_note, "payout_reference": w.payout_reference if w.status == "paid" else None,
+             "payout_proof_image": w.payout_proof_image if w.status == "paid" else None,
+             "created_at": w.created_at.isoformat(), "processed_at": w.processed_at.isoformat() if w.processed_at else None} for w in rows]
 
 
 @app.post("/api/v1/admin/wallet/adjust")
@@ -847,6 +853,15 @@ def withdrawal_queue(staff: User = Depends(require_roles("admin", "finance")), d
              "currency": w.currency, "status": w.status, "created_at": w.created_at.isoformat()} for w, u in rows]
 
 
+
+@app.get("/api/v1/withdrawal-proof-feed")
+def withdrawal_proof_feed(db: Session = Depends(get_db)):
+    rows = db.scalars(select(Withdrawal).where(Withdrawal.status == "paid", Withdrawal.payout_proof_image.is_not(None)).order_by(Withdrawal.processed_at.desc()).limit(30)).all()
+    return [{"id": w.id, "amount_minor": w.amount_minor, "currency": w.currency,
+             "payout_proof_image": w.payout_proof_image,
+             "processed_at": w.processed_at.isoformat() if w.processed_at else None}
+            for w in rows]
+
 @app.post("/api/v1/admin/withdrawals/{withdrawal_id}/process")
 def process_withdrawal(withdrawal_id: int, data: WithdrawalDecisionInput,
                        staff: User = Depends(require_roles("admin", "finance")), db: Session = Depends(get_db)):
@@ -858,8 +873,13 @@ def process_withdrawal(withdrawal_id: int, data: WithdrawalDecisionInput,
     if data.decision == "pay":
         if not data.payout_reference:
             raise HTTPException(status_code=422, detail="A payout transaction reference is required")
+        if not data.payout_proof_image:
+            raise HTTPException(status_code=422, detail="Upload the withdrawal payment proof screenshot before marking paid")
+        if not data.payout_proof_image.startswith(("data:image/jpeg;base64,", "data:image/png;base64,", "data:image/webp;base64,")):
+            raise HTTPException(status_code=422, detail="Proof must be a JPEG, PNG, or WebP image")
         withdrawal.status = "paid"
         withdrawal.payout_reference = data.payout_reference.strip()
+        withdrawal.payout_proof_image = data.payout_proof_image
     else:
         withdrawal.status = "rejected"
         db.add(WalletEntry(user_id=withdrawal.user_id, entry_type="release", amount_minor=withdrawal.amount_minor,
