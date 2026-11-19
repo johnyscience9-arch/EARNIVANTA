@@ -531,3 +531,30 @@ def test_signup_fails_closed_without_smtp_and_reset_request_is_generic(client, m
     known = client.post("/api/v1/auth/forgot-password", json={"email": "admin@example.com"})
     assert unknown.status_code == known.status_code == 200
     assert unknown.json() == known.json()
+
+
+
+def test_password_reset_token_is_single_use_and_bad_password_does_not_consume(client):
+    assert client.post("/api/v1/auth/forgot-password", json={"email": "admin@example.com"}).status_code == 200
+    body = _TEST_EMAIL_OUTBOX[-1]
+    token = re.search(r"reset=([A-Za-z0-9_-]+)", body).group(1)
+
+    invalid = client.post("/api/v1/auth/reset-password", json={
+        "token": token, "password": "short"
+    })
+    assert invalid.status_code == 422
+
+    reset = client.post("/api/v1/auth/reset-password", json={
+        "token": token, "password": "new-strong-password"
+    })
+    assert reset.status_code == 200
+    assert client.post("/api/v1/auth/reset-password", json={
+        "token": token, "password": "another-strong-password"
+    }).status_code == 400
+
+    assert client.post("/api/v1/auth/login", json={
+        "email": "admin@example.com", "password": "test-admin-password"
+    }).status_code == 401
+    assert client.post("/api/v1/auth/login", json={
+        "email": "admin@example.com", "password": "new-strong-password"
+    }).status_code == 200
