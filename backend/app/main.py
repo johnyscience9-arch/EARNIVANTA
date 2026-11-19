@@ -214,6 +214,17 @@ class PaymentDestination(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
 
+class ProjectInquiry(Base):
+    __tablename__ = "project_inquiries"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    name: Mapped[str] = mapped_column(String(80))
+    contact: Mapped[str] = mapped_column(String(160))
+    intent: Mapped[str] = mapped_column(String(40))
+    details: Mapped[str] = mapped_column(String(2000))
+    status: Mapped[str] = mapped_column(String(24), default="new", index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+
+
 class DailyHeadlineInput(BaseModel):
     headline: str = Field(min_length=3, max_length=180)
     body: str = Field(default="", max_length=1000)
@@ -364,6 +375,13 @@ def require_roles(*roles: str):
     return checker
 
 
+class PublicInquiryInput(BaseModel):
+    name: str = Field(min_length=2, max_length=80)
+    contact: str = Field(min_length=5, max_length=160)
+    intent: str = Field(pattern="^(website|android_app|windows_software|business_system|promotion|other)$")
+    details: str = Field(min_length=10, max_length=2000)
+
+
 class RegisterInput(BaseModel):
     referral_code: Optional[str] = Field(default=None, min_length=4, max_length=16)
     email: EmailStr
@@ -433,6 +451,7 @@ _AUTH_LIMITS = {
     "/api/v1/auth/mfa/setup": (3, 3600),
     "/api/v1/auth/mfa/enable": (8, 900),
     "/api/v1/auth/mfa/disable": (5, 900),
+    "/api/v1/public/inquiries": (5, 3600),
 }
 _auth_attempts = defaultdict(deque)
 _auth_lock = threading.Lock()
@@ -548,6 +567,30 @@ def public_payment_destinations(db: Session = Depends(get_db)):
     items = db.scalars(select(PaymentDestination).where(PaymentDestination.active == True)
                        .order_by(PaymentDestination.sort_order.asc(), PaymentDestination.id.asc())).all()
     return [payment_destination_public(item) for item in items]
+
+
+@app.post("/api/v1/public/inquiries", status_code=201)
+def create_public_inquiry(data: PublicInquiryInput, db: Session = Depends(get_db)):
+    inquiry = ProjectInquiry(
+        name=data.name.strip(),
+        contact=data.contact.strip(),
+        intent=data.intent,
+        details=data.details.strip(),
+        status="new",
+    )
+    if len(inquiry.name) < 2 or len(inquiry.contact) < 5 or len(inquiry.details) < 10:
+        raise HTTPException(status_code=422, detail="Please provide complete contact details and a project brief")
+    db.add(inquiry)
+    db.commit()
+    db.refresh(inquiry)
+    return {"id": inquiry.id, "status": inquiry.status, "message": "Your project enquiry has been recorded. Our team will contact you."}
+
+
+@app.get("/api/v1/admin/project-inquiries")
+def admin_project_inquiries(admin: User = Depends(require_roles("admin")), db: Session = Depends(get_db)):
+    items = db.scalars(select(ProjectInquiry).order_by(ProjectInquiry.created_at.desc()).limit(200)).all()
+    return [{"id": x.id, "name": x.name, "contact": x.contact, "intent": x.intent,
+             "details": x.details, "status": x.status, "created_at": x.created_at.isoformat()} for x in items]
 
 
 @app.get("/api/v1/admin/payment-destinations")
