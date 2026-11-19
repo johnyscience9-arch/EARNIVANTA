@@ -585,7 +585,7 @@ def test_finance_operator_must_complete_mfa(client, monkeypatch):
     })
     assert enabled.status_code == 200
     next_login = client.post("/api/v1/auth/login", json={
-        "email": "finance@example.com", "password": "test-finance-password"
+        "email": "finance@example.com", "password": "strong-test-password"
     })
     assert next_login.status_code == 200
     assert next_login.json()["mfa_required"] is True
