@@ -388,11 +388,25 @@ _AUTH_LIMITS = {"/api/v1/auth/login": (8, 900), "/api/v1/auth/register": (5, 360
 _auth_attempts = defaultdict(deque)
 _auth_lock = threading.Lock()
 
+def apply_security_headers(response, request: Request):
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+    response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
+    response.headers["Cache-Control"] = "no-store"
+    response.headers["Content-Security-Policy"] = "default-src 'none'; frame-ancestors 'none'; base-uri 'none'"
+    response.headers["Cross-Origin-Opener-Policy"] = "same-origin"
+    response.headers["Cross-Origin-Resource-Policy"] = "same-site"
+    if request.url.scheme == "https" or request.headers.get("x-forwarded-proto") == "https":
+        response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
+    return response
+
+
 @app.middleware("http")
 async def security_middleware(request: Request, call_next):
     length = request.headers.get("content-length")
     if length and length.isdigit() and int(length) > 2_000_000:
-        return JSONResponse(status_code=413, content={"detail": "Request body is too large"})
+        return apply_security_headers(JSONResponse(status_code=413, content={"detail": "Request body is too large"}), request)
     limit = _AUTH_LIMITS.get(request.url.path)
     if limit:
         maximum, window = limit
@@ -408,17 +422,9 @@ async def security_middleware(request: Request, call_next):
                 retry_after = max(1, int(window - (now - attempts[0])))
                 response = JSONResponse(status_code=429, content={"detail": "Too many attempts. Please try again later."})
                 response.headers["Retry-After"] = str(retry_after)
-                return response
+                return apply_security_headers(response, request)
             attempts.append(now)
-    response = await call_next(request)
-    response.headers["X-Content-Type-Options"] = "nosniff"
-    response.headers["X-Frame-Options"] = "DENY"
-    response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
-    response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
-    response.headers["Cache-Control"] = "no-store"
-    if request.url.scheme == "https" or request.headers.get("x-forwarded-proto") == "https":
-        response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
-    return response
+    return apply_security_headers(await call_next(request), request)
 
 
 
