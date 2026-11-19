@@ -87,14 +87,14 @@ jobs:
           status, headers, _ = request("/api/v1/auth/login", "OPTIONS", denied)
           assert status == 400, f"Unexpected disallowed-origin preflight status: {status}"
           assert "Access-Control-Allow-Origin" not in headers, headers
+          def request_site():
+              req = urllib.request.Request("https://earnivanta.pages.dev/", method="GET")
+              with urllib.request.urlopen(req, timeout=30) as response:
+                  return response.status, dict(response.headers), response.read().decode("utf-8", "replace")
+
           site_status, site_headers, _ = request_site()
           assert site_status == 200, f"Frontend returned {site_status}"
           for name in ("x-frame-options", "x-content-type-options", "referrer-policy", "content-security-policy"):
               assert name in {key.lower() for key in site_headers}, f"Missing frontend security header: {name}"
           print("Production smoke passed: frontend/API health, security headers, auth gates, docs disabled, CORS allow/deny.")
-
-          def request_site():
-              req = urllib.request.Request("https://earnivanta.pages.dev/", method="GET")
-              with urllib.request.urlopen(req, timeout=30) as response:
-                  return response.status, dict(response.headers), response.read().decode("utf-8", "replace")
           PY
