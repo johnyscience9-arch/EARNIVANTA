@@ -499,3 +499,16 @@ def test_production_admin_mfa_is_mandatory_and_recoverable(client, monkeypatch):
         "challenge_token": challenge, "code": recovery_code
     })
     assert reused.status_code == 401
+
+
+
+def test_cors_preflight_is_not_counted_as_auth_attempt(client):
+    headers = {
+        "Origin": "http://localhost:5500",
+        "Access-Control-Request-Method": "POST",
+        "Access-Control-Request-Headers": "content-type",
+    }
+    for _ in range(12):
+        response = client.options("/api/v1/auth/login", headers=headers)
+        assert response.status_code == 200, response.text
+        assert response.headers.get("access-control-allow-origin") == "http://localhost:5500"
