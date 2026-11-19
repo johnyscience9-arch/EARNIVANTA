@@ -396,7 +396,8 @@ async def security_middleware(request: Request, call_next):
     limit = _AUTH_LIMITS.get(request.url.path)
     if limit:
         maximum, window = limit
-        client_ip = request.client.host if request.client else "unknown"
+        forwarded = request.headers.get("x-forwarded-for", "")
+        client_ip = forwarded.split(",")[-1].strip() if forwarded else (request.client.host if request.client else "unknown")
         key = (request.url.path, client_ip)
         now = time.monotonic()
         with _auth_lock:
@@ -685,7 +686,7 @@ def submit_campaign(campaign_id: int, user: User = Depends(require_roles("advert
 
 @app.post("/api/v1/admin/campaigns/{campaign_id}/review")
 def review_campaign(campaign_id: int, data: ReviewDecision, admin: User = Depends(require_roles("admin", "reviewer")), db: Session = Depends(get_db)):
-    campaign = db.get(Campaign, campaign_id)
+    campaign = db.scalar(select(Campaign).where(Campaign.id == campaign_id).with_for_update())
     if not campaign:
         raise HTTPException(status_code=404, detail="Campaign not found")
     if campaign.status != "pending_review":
@@ -710,7 +711,7 @@ def submit_task(campaign_id: int, task_id: int, user: User = Depends(require_rol
 
 @app.post("/api/v1/admin/tasks/{task_id}/review")
 def review_task(task_id: int, data: ReviewDecision, admin: User = Depends(require_roles("admin", "reviewer")), db: Session = Depends(get_db)):
-    task = db.get(Task, task_id)
+    task = db.scalar(select(Task).where(Task.id == task_id).with_for_update())
     if not task:
         raise HTTPException(status_code=404, detail="Task not found")
     if task.status != "pending_review":
@@ -748,7 +749,7 @@ class SubmissionReviewInput(BaseModel):
 
 @app.post("/api/v1/tasks/{task_id}/submissions", status_code=201)
 def create_submission(task_id: int, data: SubmissionInput, worker: User = Depends(require_roles("member", "maintenance")), db: Session = Depends(get_db)):
-    task = db.get(Task, task_id)
+    task = db.scalar(select(Task).where(Task.id == task_id).with_for_update())
     if not task or task.status != "published":
         raise HTTPException(status_code=404, detail="Available task not found")
     campaign = db.get(Campaign, task.campaign_id)
