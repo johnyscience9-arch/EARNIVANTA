@@ -427,6 +427,9 @@ _AUTH_LIMITS = {
     "/api/v1/auth/verify-email": (10, 900),
     "/api/v1/auth/reset-password": (5, 900),
     "/api/v1/auth/mfa/verify": (8, 900),
+    "/api/v1/auth/mfa/setup": (3, 3600),
+    "/api/v1/auth/mfa/enable": (8, 900),
+    "/api/v1/auth/mfa/disable": (5, 900),
 }
 _auth_attempts = defaultdict(deque)
 _auth_lock = threading.Lock()
@@ -675,9 +678,12 @@ def resend_verification(data: dict, db: Session = Depends(get_db)):
     email = str(data.get("email", "")).lower().strip()
     user = db.scalar(select(User).where(User.email == email))
     if user and user.active and not user.email_verified and smtp_ready():
-        raw = issue_auth_token(db, user, "verify_email", 30)
-        send_auth_email(user.email, "Verify your EARNIVANTA account",
-                        f"Hello {user.display_name},\n\nVerify your email within 30 minutes:\n{auth_link('verify', raw)}\n\nIf you did not request this, ignore this message.")
+        try:
+            raw = issue_auth_token(db, user, "verify_email", 30)
+            send_auth_email(user.email, "Verify your EARNIVANTA account",
+                            f"Hello {user.display_name},\n\nVerify your email within 30 minutes:\n{auth_link('verify', raw)}\n\nIf you did not request this, ignore this message.")
+        except HTTPException:
+            pass
     return {"message": "If the account needs verification, an email will be sent."}
 
 
@@ -686,9 +692,12 @@ def forgot_password(data: dict, db: Session = Depends(get_db)):
     email = str(data.get("email", "")).lower().strip()
     user = db.scalar(select(User).where(User.email == email))
     if user and user.active and user.email_verified and smtp_ready():
-        raw = issue_auth_token(db, user, "password_reset", 30)
-        send_auth_email(user.email, "Reset your EARNIVANTA password",
-                        f"Hello {user.display_name},\n\nReset your password within 30 minutes:\n{auth_link('reset', raw)}\n\nIf you did not request this, ignore this message.")
+        try:
+            raw = issue_auth_token(db, user, "password_reset", 30)
+            send_auth_email(user.email, "Reset your EARNIVANTA password",
+                            f"Hello {user.display_name},\n\nReset your password within 30 minutes:\n{auth_link('reset', raw)}\n\nIf you did not request this, ignore this message.")
+        except HTTPException:
+            pass
     return {"message": "If an eligible account exists, password reset instructions will be sent."}
 
 
