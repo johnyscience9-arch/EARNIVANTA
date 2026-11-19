@@ -37,6 +37,12 @@ def client(monkeypatch):
             password_hash=hash_password("test-admin-password"),
             role="admin",
         ))
+        db.add(User(
+            email="finance@example.com",
+            display_name="Test Finance",
+            password_hash=hash_password("test-finance-password"),
+            role="finance",
+        ))
         db.commit()
 
     def override_get_db():
@@ -558,3 +564,27 @@ def test_password_reset_token_is_single_use_and_bad_password_does_not_consume(cl
     assert client.post("/api/v1/auth/login", json={
         "email": "admin@example.com", "password": "new-strong-password"
     }).status_code == 200
+
+
+
+def test_finance_operator_must_complete_mfa(client, monkeypatch):
+    monkeypatch.setattr(auth_module, "ADMIN_MFA_REQUIRED", True)
+    login = client.post("/api/v1/auth/login", json={
+        "email": "finance@example.com", "password": "test-finance-password"
+    })
+    assert login.status_code == 200
+    assert login.json()["mfa_setup_required"] is True
+    setup = client.post("/api/v1/auth/mfa/initial-setup", json={
+        "setup_token": login.json()["setup_token"]
+    })
+    assert setup.status_code == 200
+    enabled = client.post("/api/v1/auth/mfa/initial-enable", json={
+        "setup_token": login.json()["setup_token"],
+        "code": totp_code(setup.json()["secret"])
+    })
+    assert enabled.status_code == 200
+    next_login = client.post("/api/v1/auth/login", json={
+        "email": "finance@example.com", "password": "test-finance-password"
+    })
+    assert next_login.status_code == 200
+    assert next_login.json()["mfa_required"] is True
