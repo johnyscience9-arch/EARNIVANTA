@@ -13,7 +13,25 @@ function msg(t){$("toast").textContent=t;$("toast").classList.remove("hidden");s
 const esc=s=>String(s??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 function url(p){return base.replace(/\/$/,"")+p}
 async function call(p,m="GET",data){const r=await fetch(url(p),{method:m,headers:{"Content-Type":"application/json","Authorization":"Bearer "+token},...(data?{body:JSON.stringify(data)}:{})});const d=await r.json().catch(()=>({detail:"Invalid server response"}));if(!r.ok)throw Error(d.detail||"Request failed");return d}
-$("loginBtn").onclick=async()=>{try{base=$("api").value.trim().replace(/\/$/,"");if(!/^https?:\/\//.test(base))throw Error("Enter the deployed API URL");const r=await fetch(url("/api/v1/auth/login"),{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({email:$("email").value,password:$("password").value})});const d=await r.json();if(!r.ok)throw Error(d.detail||"Login failed");token=d.access_token;if(d.user.role!=="admin"){token="";throw Error("Only Admin can manage payment destinations")}$("login").classList.add("hidden");$("desk").classList.remove("hidden");$("logout").classList.remove("hidden");await load()}catch(e){msg(e.message)}};
+async function completeAdminAuth(d){
+ if(d.mfa_setup_required){
+  const setup=await call("/api/v1/auth/mfa/initial-setup","POST",{setup_token:d.setup_token});
+  try{await navigator.clipboard.writeText(setup.secret);alert("ADMIN MFA REQUIRED\\n\\nAuthenticator secret copied. Add it manually to your authenticator app.\\n\\nSecret: "+setup.secret)}catch(_){alert("ADMIN MFA REQUIRED\\n\\nAdd this secret to your authenticator app:\\n"+setup.secret)}
+  const code=prompt("Enter the current 6-digit authenticator code to enable MFA:");
+  if(!code)throw Error("MFA setup was not completed. Sign in again to continue.");
+  const enabled=await call("/api/v1/auth/mfa/initial-enable","POST",{setup_token:d.setup_token,code:code.trim()});
+  try{await navigator.clipboard.writeText(enabled.recovery_codes.join("\\n"))}catch(_){}
+  alert("MFA enabled. Save these one-time recovery codes offline:\\n\\n"+enabled.recovery_codes.join("\\n"));
+  throw Error("Admin MFA enabled. Sign in again with your authenticator code.");
+ }
+ if(d.mfa_required){
+  const code=prompt("Enter your 6-digit authenticator code (or one-time recovery code):");
+  if(!code)throw Error("Authenticator code is required.");
+  return await call("/api/v1/auth/mfa/verify","POST",{challenge_token:d.challenge_token,code:code.trim()});
+ }
+ return d;
+}
+$("loginBtn").onclick=async()=>{try{base=$("api").value.trim().replace(/\/$/,"");if(!/^https?:\/\//.test(base))throw Error("Enter the deployed API URL");const r=await fetch(url("/api/v1/auth/login"),{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({email:$("email").value,password:$("password").value})});let d=await r.json();if(!r.ok)throw Error(d.detail||"Login failed");d=await completeAdminAuth(d);token=d.access_token;if(d.user.role!=="admin"){token="";throw Error("Only Admin can manage payment destinations")}$("login").classList.add("hidden");$("desk").classList.remove("hidden");$("logout").classList.remove("hidden");await load()}catch(e){msg(e.message)}};
 $("logout").onclick=()=>{token="";$("desk").classList.add("hidden");$("login").classList.remove("hidden");$("logout").classList.add("hidden");$("password").value=""};
 function clearForm(){$("editor").reset();$("itemId").value="";$("sort").value="0";$("active").checked=true;$("formTitle").textContent="Add a payment number";$("save").textContent="SAVE DESTINATION ↗"}
 $("clear").onclick=clearForm;
