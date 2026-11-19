@@ -44,3 +44,48 @@ jobs:
       - name: Run workflow tests
         working-directory: backend
         run: PYTHONPATH=. pytest -q
+      - name: Production API smoke and CORS security checks
+        if: github.event_name == 'push'
+        run: |
+          python - <<'PY'
+          import json
+          import urllib.error
+          import urllib.request
+
+          base = "https://earnivanta-api-ozq5.onrender.com"
+          def request(path, method="GET", headers=None):
+              req = urllib.request.Request(base + path, method=method, headers=headers or {})
+              try:
+                  with urllib.request.urlopen(req, timeout=30) as response:
+                      return response.status, dict(response.headers), response.read().decode("utf-8", "replace")
+              except urllib.error.HTTPError as error:
+                  return error.code, dict(error.headers), error.read().decode("utf-8", "replace")
+
+          status, headers, body = request("/api/v1/health")
+          assert status == 200 and json.loads(body).get("ok") is True, (status, body)
+          for name in ("content-security-policy", "x-frame-options", "x-content-type-options", "referrer-policy"):
+              assert name in {key.lower() for key in headers}, f"Missing API security header: {name}"
+
+          status, _, _ = request("/api/v1/me")
+          assert status == 401, f"Unauthenticated member route returned {status}"
+          status, _, _ = request("/api/v1/admin/users")
+          assert status == 401, f"Unauthenticated admin route returned {status}"
+          for path in ("/docs", "/redoc", "/openapi.json"):
+              status, _, _ = request(path)
+              assert status == 404, f"Production API docs still exposed at {path}: {status}"
+
+          allowed = {
+              "Origin": "https://earnivanta.pages.dev",
+              "Access-Control-Request-Method": "POST",
+              "Access-Control-Request-Headers": "content-type",
+          }
+          status, headers, _ = request("/api/v1/auth/login", "OPTIONS", allowed)
+          assert status == 200, f"Allowed CORS preflight failed: {status}"
+          assert headers.get("Access-Control-Allow-Origin") == allowed["Origin"], headers
+
+          denied = dict(allowed, Origin="https://evil.example")
+          status, headers, _ = request("/api/v1/auth/login", "OPTIONS", denied)
+          assert status == 400, f"Unexpected disallowed-origin preflight status: {status}"
+          assert "Access-Control-Allow-Origin" not in headers, headers
+          print("Production smoke passed: health, security headers, auth gates, docs disabled, CORS allow/deny.")
+          PY
