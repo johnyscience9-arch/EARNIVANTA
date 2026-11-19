@@ -28,6 +28,7 @@ elif DATABASE_URL.startswith("postgresql://"):
     DATABASE_URL = "postgresql+psycopg://" + DATABASE_URL[len("postgresql://"):]
 TOKEN_SECRET = os.getenv("TOKEN_SECRET", "")
 TOKEN_TTL_HOURS = int(os.getenv("TOKEN_TTL_HOURS", "24"))
+ADMIN_MFA_REQUIRED = os.getenv("ADMIN_MFA_REQUIRED", "true" if APP_ENV == "production" else "false").strip().lower() == "true"
 if TOKEN_TTL_HOURS < 1 or TOKEN_TTL_HOURS > (24 if APP_ENV == "production" else 720):
     raise RuntimeError("TOKEN_TTL_HOURS must be between 1 and 24 in production (720 in development)")
 if not TOKEN_SECRET:
@@ -725,6 +726,10 @@ def login(data: LoginInput, db: Session = Depends(get_db)):
         raise HTTPException(status_code=401, detail="Email or password is incorrect")
     if not user.email_verified:
         raise HTTPException(status_code=403, detail="Please verify your email before signing in.")
+    if user.role == "admin" and not user.mfa_enabled and ADMIN_MFA_REQUIRED:
+        payload = b64(json.dumps({"sub": str(user.id), "ver": user.session_version, "purpose": "mfa_setup", "exp": int((datetime.now(timezone.utc)+timedelta(minutes=10)).timestamp())}, separators=(",", ":")).encode())
+        signature = b64(hmac.new(TOKEN_SECRET.encode(), payload.encode(), hashlib.sha256).digest())
+        return {"mfa_setup_required": True, "setup_token": payload + "." + signature}
     if user.role == "admin" and user.mfa_enabled:
         payload = b64(json.dumps({"sub": str(user.id), "ver": user.session_version, "purpose": "mfa", "exp": int((datetime.now(timezone.utc)+timedelta(minutes=5)).timestamp())}, separators=(",", ":")).encode())
         signature = b64(hmac.new(TOKEN_SECRET.encode(), payload.encode(), hashlib.sha256).digest())
@@ -769,6 +774,47 @@ def decode_mfa_challenge(token: str, db: Session) -> User:
         return user
     except Exception as exc:
         raise HTTPException(status_code=401, detail="Invalid or expired MFA challenge") from exc
+
+
+def decode_mfa_setup(token: str, db: Session) -> User:
+    try:
+        payload, signature = token.split(".")
+        expected = b64(hmac.new(TOKEN_SECRET.encode(), payload.encode(), hashlib.sha256).digest())
+        if not hmac.compare_digest(signature, expected):
+            raise ValueError("signature")
+        claims = json.loads(base64.urlsafe_b64decode(payload + "=" * (-len(payload) % 4)))
+        if claims.get("purpose") != "mfa_setup" or int(claims["exp"]) <= int(time.time()):
+            raise ValueError("expired")
+        user = db.get(User, int(claims["sub"]))
+        if not user or not user.active or user.role != "admin" or user.mfa_enabled or int(claims.get("ver", -1)) != user.session_version:
+            raise ValueError("user")
+        return user
+    except Exception as exc:
+        raise HTTPException(status_code=401, detail="Invalid or expired MFA setup challenge") from exc
+
+
+@app.post("/api/v1/auth/mfa/initial-setup")
+def initial_mfa_setup(data: dict, db: Session = Depends(get_db)):
+    user = decode_mfa_setup(str(data.get("setup_token", "")), db)
+    secret = base64.b32encode(secrets.token_bytes(20)).decode("ascii").rstrip("=")
+    user.mfa_secret = secret
+    db.commit()
+    uri = f"otpauth://totp/EARNIVANTA:{user.email}?secret={secret}&issuer=EARNIVANTA&algorithm=SHA1&digits=6&period=30"
+    return {"secret": secret, "otpauth_uri": uri, "message": "Add the secret to an authenticator app, then confirm with a current 6-digit code."}
+
+
+@app.post("/api/v1/auth/mfa/initial-enable")
+def initial_mfa_enable(data: dict, db: Session = Depends(get_db)):
+    user = decode_mfa_setup(str(data.get("setup_token", "")), db)
+    if not user.mfa_secret or not valid_totp(user.mfa_secret, str(data.get("code", ""))):
+        raise HTTPException(status_code=400, detail="Invalid authentication code")
+    user.mfa_enabled = True
+    user.session_version += 1
+    recovery_codes = [secrets.token_hex(5).upper() for _ in range(8)]
+    user.mfa_recovery_hashes = json.dumps([hashlib.sha256(code.encode()).hexdigest() for code in recovery_codes])
+    db.commit()
+    return {"mfa_enabled": True, "recovery_codes": recovery_codes,
+            "message": "Admin MFA enabled. Save the one-time recovery codes offline."}
 
 
 @app.post("/api/v1/auth/mfa/verify")
