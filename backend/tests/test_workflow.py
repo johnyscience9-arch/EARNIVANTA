@@ -466,3 +466,36 @@ def test_admin_totp_mfa_enrollment_and_login_challenge(client):
         "challenge_token": challenge.json()["challenge_token"], "code": totp_code(secret)
     })
     assert verified.status_code == 200 and verified.json().get("access_token")
+
+
+
+def test_production_admin_mfa_is_mandatory_and_recoverable(client, monkeypatch):
+    monkeypatch.setattr(auth_module, "ADMIN_MFA_REQUIRED", True)
+    first_login = client.post("/api/v1/auth/login", json={
+        "email": "admin@example.com", "password": "test-admin-password"
+    })
+    assert first_login.status_code == 200
+    assert first_login.json()["mfa_setup_required"] is True
+    setup_token = first_login.json()["setup_token"]
+    setup = client.post("/api/v1/auth/mfa/initial-setup", json={"setup_token": setup_token})
+    assert setup.status_code == 200
+    secret = setup.json()["secret"]
+    enabled = client.post("/api/v1/auth/mfa/initial-enable", json={
+        "setup_token": setup_token, "code": totp_code(secret)
+    })
+    assert enabled.status_code == 200
+    assert len(enabled.json()["recovery_codes"]) == 8
+    second_login = client.post("/api/v1/auth/login", json={
+        "email": "admin@example.com", "password": "test-admin-password"
+    })
+    assert second_login.json()["mfa_required"] is True
+    challenge = second_login.json()["challenge_token"]
+    recovery_code = enabled.json()["recovery_codes"][0]
+    recovered = client.post("/api/v1/auth/mfa/verify", json={
+        "challenge_token": challenge, "code": recovery_code
+    })
+    assert recovered.status_code == 200
+    reused = client.post("/api/v1/auth/mfa/verify", json={
+        "challenge_token": challenge, "code": recovery_code
+    })
+    assert reused.status_code == 401
