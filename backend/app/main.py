@@ -6,6 +6,8 @@ import json
 import secrets
 import time
 import threading
+import smtplib
+from email.message import EmailMessage
 from collections import defaultdict, deque
 from datetime import datetime, timedelta, timezone
 from typing import Optional
@@ -65,6 +67,21 @@ class User(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
     referral_code: Mapped[Optional[str]] = mapped_column(String(16), unique=True, index=True, nullable=True)
     referred_by_id: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id"), nullable=True)
+    email_verified: Mapped[bool] = mapped_column(Boolean, default=True, server_default="true")
+    mfa_secret: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    mfa_enabled: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
+    session_version: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+
+
+class AuthToken(Base):
+    __tablename__ = "auth_tokens"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    purpose: Mapped[str] = mapped_column(String(24), index=True)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    used_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
 
 class Campaign(Base):
@@ -217,6 +234,18 @@ if "referral_code" not in {c["name"] for c in inspect(engine).get_columns("users
 if "referred_by_id" not in {c["name"] for c in inspect(engine).get_columns("users")}:
     with engine.begin() as conn:
         conn.execute(text("ALTER TABLE users ADD COLUMN referred_by_id INTEGER"))
+if "email_verified" not in {c["name"] for c in inspect(engine).get_columns("users")}:
+    with engine.begin() as conn:
+        conn.execute(text("ALTER TABLE users ADD COLUMN email_verified BOOLEAN NOT NULL DEFAULT TRUE"))
+if "mfa_secret" not in {c["name"] for c in inspect(engine).get_columns("users")}:
+    with engine.begin() as conn:
+        conn.execute(text("ALTER TABLE users ADD COLUMN mfa_secret VARCHAR(64)"))
+if "mfa_enabled" not in {c["name"] for c in inspect(engine).get_columns("users")}:
+    with engine.begin() as conn:
+        conn.execute(text("ALTER TABLE users ADD COLUMN mfa_enabled BOOLEAN NOT NULL DEFAULT FALSE"))
+if "session_version" not in {c["name"] for c in inspect(engine).get_columns("users")}:
+    with engine.begin() as conn:
+        conn.execute(text("ALTER TABLE users ADD COLUMN session_version INTEGER NOT NULL DEFAULT 0"))
 with engine.begin() as conn:
     conn.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS uq_users_referral_code ON users (referral_code)"))
 
@@ -283,7 +312,7 @@ def create_token(user: User) -> str:
     now = datetime.now(timezone.utc)
     header = b64(json.dumps({"alg": "HS256", "typ": "JWT"}, separators=(",", ":")).encode())
     payload = b64(json.dumps({
-        "sub": str(user.id), "role": user.role,
+        "sub": str(user.id), "role": user.role, "ver": user.session_version, "purpose": "access",
         "iat": int(now.timestamp()),
         "exp": int((now + timedelta(hours=TOKEN_TTL_HOURS)).timestamp())
     }, separators=(",", ":")).encode())
@@ -317,6 +346,8 @@ def current_user(credentials: Optional[HTTPAuthorizationCredentials] = Depends(b
     user = db.get(User, int(claims["sub"]))
     if not user or not user.active:
         raise HTTPException(status_code=401, detail="Account unavailable")
+    if claims.get("purpose", "access") != "access" or int(claims.get("ver", 0)) != user.session_version:
+        raise HTTPException(status_code=401, detail="Session expired; please sign in again")
     return user
 
 
@@ -537,41 +568,227 @@ def disable_payment_destination(destination_id: int, admin: User = Depends(requi
     return {"id": item.id, "active": False, "message": "Payment destination disabled"}
 
 
+def smtp_ready() -> bool:
+    return all(os.getenv(key, "").strip() for key in ("SMTP_HOST", "SMTP_USERNAME", "SMTP_PASSWORD", "SMTP_FROM_EMAIL"))
+
+
+def send_auth_email(recipient: str, subject: str, body: str) -> None:
+    host = os.getenv("SMTP_HOST", "").strip()
+    username = os.getenv("SMTP_USERNAME", "").strip()
+    password = os.getenv("SMTP_PASSWORD", "")
+    sender = os.getenv("SMTP_FROM_EMAIL", "").strip()
+    if not all((host, username, password, sender)):
+        raise HTTPException(status_code=503, detail="Email service is not configured yet. Please try again later.")
+    message = EmailMessage()
+    message["Subject"] = subject
+    message["From"] = f'{os.getenv("SMTP_FROM_NAME", "EARNIVANTA")} <{sender}>'
+    message["To"] = recipient
+    message.set_content(body)
+    try:
+        with smtplib.SMTP(host, int(os.getenv("SMTP_PORT", "587")), timeout=15) as server:
+            server.ehlo()
+            server.starttls()
+            server.ehlo()
+            server.login(username, password)
+            server.send_message(message)
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail="Email delivery failed. Please try again later.") from exc
+
+
+def issue_auth_token(db: Session, user: User, purpose: str, minutes: int = 30) -> str:
+    raw = secrets.token_urlsafe(32)
+    db.add(AuthToken(user_id=user.id, token_hash=hashlib.sha256(raw.encode()).hexdigest(),
+                     purpose=purpose, expires_at=datetime.now(timezone.utc) + timedelta(minutes=minutes)))
+    db.commit()
+    return raw
+
+
+def consume_auth_token(db: Session, raw: str, purpose: str):
+    if not raw or len(raw) > 256:
+        raise HTTPException(status_code=400, detail="Invalid or expired link")
+    digest = hashlib.sha256(raw.encode()).hexdigest()
+    item = db.scalar(select(AuthToken).where(AuthToken.token_hash == digest, AuthToken.purpose == purpose).with_for_update())
+    now = datetime.now(timezone.utc)
+    expiry = item.expires_at if item else now
+    if not item or item.used_at or (expiry.replace(tzinfo=timezone.utc) if expiry.tzinfo is None else expiry) <= now:
+        raise HTTPException(status_code=400, detail="Invalid or expired link")
+    user = db.get(User, item.user_id)
+    if not user or not user.active:
+        raise HTTPException(status_code=400, detail="Invalid or expired link")
+    item.used_at = now
+    return item, user
+
+
+def auth_link(kind: str, raw: str) -> str:
+    base = os.getenv("FRONTEND_URL", "https://earnivanta.pages.dev").rstrip("/")
+    return f"{base}/portal.html?{kind}={raw}"
+
+
 @app.post("/api/v1/auth/register", status_code=201)
 def register(data: RegisterInput, db: Session = Depends(get_db)):
+    if not smtp_ready():
+        raise HTTPException(status_code=503, detail="Email verification is temporarily unavailable. Please try again later.")
     email = str(data.email).lower().strip()
     if db.scalar(select(User).where(User.email == email)):
         raise HTTPException(status_code=409, detail="An account with this email already exists")
     referrer = None
     if data.referral_code:
-        referrer = db.scalar(select(User).where(User.referral_code == data.referral_code.strip().upper(), User.active == True))
+        referrer = db.scalar(select(User).where(User.referral_code == data.referral_code.strip().upper(), User.active == True, User.email_verified == True))
         if not referrer:
             raise HTTPException(status_code=422, detail="Referral code is invalid")
     user = User(email=email, display_name=data.display_name.strip(), password_hash=hash_password(data.password), role="member",
-                referral_code=secrets.token_hex(4).upper(), referred_by_id=(referrer.id if referrer else None))
+                email_verified=False, referral_code=secrets.token_hex(4).upper(), referred_by_id=(referrer.id if referrer else None))
     db.add(user)
     db.commit()
     db.refresh(user)
     if referrer:
         db.add(Referral(referrer_id=referrer.id, referred_user_id=user.id, status="pending"))
         db.commit()
-    return {"access_token": create_token(user), "token_type": "bearer", "user": user_public(user)}
+    raw = issue_auth_token(db, user, "verify_email", 30)
+    send_auth_email(user.email, "Verify your EARNIVANTA account",
+                    f"Hello {user.display_name},\n\nVerify your email within 30 minutes:\n{auth_link('verify', raw)}\n\nIf you did not create this account, ignore this message.")
+    return {"verification_required": True, "message": "Check your email for a verification link."}
+
+
+@app.post("/api/v1/auth/verify-email")
+def verify_email(data: dict, db: Session = Depends(get_db)):
+    _, user = consume_auth_token(db, str(data.get("token", "")), "verify_email")
+    user.email_verified = True
+    db.commit()
+    return {"verified": True, "message": "Email verified. You can now sign in."}
+
+
+@app.post("/api/v1/auth/resend-verification")
+def resend_verification(data: dict, db: Session = Depends(get_db)):
+    email = str(data.get("email", "")).lower().strip()
+    user = db.scalar(select(User).where(User.email == email))
+    if user and user.active and not user.email_verified and smtp_ready():
+        raw = issue_auth_token(db, user, "verify_email", 30)
+        send_auth_email(user.email, "Verify your EARNIVANTA account",
+                        f"Hello {user.display_name},\n\nVerify your email within 30 minutes:\n{auth_link('verify', raw)}\n\nIf you did not request this, ignore this message.")
+    return {"message": "If the account needs verification, an email will be sent."}
+
+
+@app.post("/api/v1/auth/forgot-password")
+def forgot_password(data: dict, db: Session = Depends(get_db)):
+    email = str(data.get("email", "")).lower().strip()
+    user = db.scalar(select(User).where(User.email == email))
+    if user and user.active and user.email_verified and smtp_ready():
+        raw = issue_auth_token(db, user, "password_reset", 30)
+        send_auth_email(user.email, "Reset your EARNIVANTA password",
+                        f"Hello {user.display_name},\n\nReset your password within 30 minutes:\n{auth_link('reset', raw)}\n\nIf you did not request this, ignore this message.")
+    return {"message": "If an eligible account exists, password reset instructions will be sent."}
+
+
+@app.post("/api/v1/auth/reset-password")
+def reset_password(data: dict, db: Session = Depends(get_db)):
+    _, user = consume_auth_token(db, str(data.get("token", "")), "password_reset")
+    password = str(data.get("password", ""))
+    if len(password) < 10 or len(password) > 128:
+        raise HTTPException(status_code=422, detail="Password must be 10–128 characters")
+    user.password_hash = hash_password(password)
+    user.session_version += 1
+    db.execute(text("UPDATE auth_tokens SET used_at = :now WHERE user_id = :uid AND used_at IS NULL"),
+               {"now": datetime.now(timezone.utc), "uid": user.id})
+    db.commit()
+    return {"reset": True, "message": "Password updated. Sign in again."}
 
 
 @app.post("/api/v1/auth/login")
 def login(data: LoginInput, db: Session = Depends(get_db)):
     email = str(data.email).lower().strip()
     user = db.scalar(select(User).where(User.email == email))
-    # Perform the same expensive password derivation for unknown emails to reduce timing-based enumeration.
     encoded_hash = user.password_hash if user else DUMMY_PASSWORD_HASH
     password_ok = verify_password(data.password, encoded_hash)
     if not user or not password_ok or not user.active:
         raise HTTPException(status_code=401, detail="Email or password is incorrect")
+    if not user.email_verified:
+        raise HTTPException(status_code=403, detail="Please verify your email before signing in.")
+    if user.role == "admin" and user.mfa_enabled:
+        payload = b64(json.dumps({"sub": str(user.id), "purpose": "mfa", "exp": int((datetime.now(timezone.utc)+timedelta(minutes=5)).timestamp())}, separators=(",", ":")).encode())
+        signature = b64(hmac.new(TOKEN_SECRET.encode(), payload.encode(), hashlib.sha256).digest())
+        return {"mfa_required": True, "challenge_token": payload + "." + signature}
     return {"access_token": create_token(user), "token_type": "bearer", "user": user_public(user)}
 
 
 def user_public(user: User):
-    return {"id": user.id, "email": user.email, "display_name": user.display_name, "role": user.role, "active": user.active, "referral_code": user.referral_code}
+    return {"id": user.id, "email": user.email, "display_name": user.display_name, "role": user.role,
+            "active": user.active, "referral_code": user.referral_code, "email_verified": user.email_verified,
+            "mfa_enabled": user.mfa_enabled}
+
+
+def totp_code(secret: str, timestamp=None) -> str:
+    key = base64.b32decode(secret + "=" * (-len(secret) % 8))
+    counter = int((timestamp if timestamp is not None else time.time()) // 30)
+    digest = hmac.new(key, counter.to_bytes(8, "big"), hashlib.sha1).digest()
+    offset = digest[-1] & 0x0f
+    number = (int.from_bytes(digest[offset:offset+4], "big") & 0x7fffffff) % 1_000_000
+    return f"{number:06d}"
+
+
+def valid_totp(secret: str, code: str) -> bool:
+    if not (isinstance(code, str) and code.isdigit() and len(code) == 6):
+        return False
+    now = int(time.time())
+    return any(hmac.compare_digest(totp_code(secret, now + drift * 30), code) for drift in (-1, 0, 1))
+
+
+def decode_mfa_challenge(token: str) -> User:
+    try:
+        payload, signature = token.split(".")
+        expected = b64(hmac.new(TOKEN_SECRET.encode(), payload.encode(), hashlib.sha256).digest())
+        if not hmac.compare_digest(signature, expected):
+            raise ValueError("signature")
+        claims = json.loads(base64.urlsafe_b64decode(payload + "=" * (-len(payload) % 4)))
+        if claims.get("purpose") != "mfa" or int(claims["exp"]) <= int(time.time()):
+            raise ValueError("expired")
+        with SessionLocal() as db:
+            user = db.get(User, int(claims["sub"]))
+            if not user or not user.active or user.role != "admin" or not user.mfa_enabled:
+                raise ValueError("user")
+            return user
+    except Exception as exc:
+        raise HTTPException(status_code=401, detail="Invalid or expired MFA challenge") from exc
+
+
+@app.post("/api/v1/auth/mfa/verify")
+def verify_mfa(data: dict):
+    user = decode_mfa_challenge(str(data.get("challenge_token", "")))
+    if not valid_totp(user.mfa_secret or "", str(data.get("code", ""))):
+        raise HTTPException(status_code=401, detail="Invalid authentication code")
+    return {"access_token": create_token(user), "token_type": "bearer", "user": user_public(user)}
+
+
+@app.post("/api/v1/auth/mfa/setup")
+def setup_mfa(admin: User = Depends(require_roles("admin")), db: Session = Depends(get_db)):
+    if admin.mfa_enabled:
+        raise HTTPException(status_code=409, detail="MFA is already enabled")
+    secret = base64.b32encode(secrets.token_bytes(20)).decode("ascii").rstrip("=")
+    admin.mfa_secret = secret
+    db.commit()
+    uri = f"otpauth://totp/EARNIVANTA:{admin.email}?secret={secret}&issuer=EARNIVANTA&algorithm=SHA1&digits=6&period=30"
+    return {"secret": secret, "otpauth_uri": uri, "message": "Add this secret to an authenticator app, then confirm with a current 6-digit code."}
+
+
+@app.post("/api/v1/auth/mfa/enable")
+def enable_mfa(data: dict, admin: User = Depends(require_roles("admin")), db: Session = Depends(get_db)):
+    if not admin.mfa_secret or not valid_totp(admin.mfa_secret, str(data.get("code", ""))):
+        raise HTTPException(status_code=400, detail="Invalid authentication code")
+    admin.mfa_enabled = True
+    db.commit()
+    return {"mfa_enabled": True, "message": "Admin MFA is now enabled."}
+
+
+@app.post("/api/v1/auth/mfa/disable")
+def disable_mfa(data: dict, admin: User = Depends(require_roles("admin")), db: Session = Depends(get_db)):
+    if not admin.mfa_enabled or not verify_password(str(data.get("password", "")), admin.password_hash) or not valid_totp(admin.mfa_secret or "", str(data.get("code", ""))):
+        raise HTTPException(status_code=401, detail="Password or authentication code is incorrect")
+    admin.mfa_enabled = False
+    admin.mfa_secret = None
+    db.commit()
+    return {"mfa_enabled": False}
+
+
 
 
 @app.get("/api/v1/me")
