@@ -562,6 +562,7 @@ def test_password_reset_token_is_single_use_and_bad_password_does_not_consume(cl
 
 
 def test_finance_operator_must_complete_mfa(client, monkeypatch):
+    monkeypatch.setattr(auth_module, "ADMIN_MFA_REQUIRED", False)
     register(client, "finance@example.com", "Test Finance")
     admin_login = client.post("/api/v1/auth/login", json={
         "email": "admin@example.com", "password": "test-admin-password"
