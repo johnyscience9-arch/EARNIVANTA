@@ -1,4 +1,5 @@
 import os
+import re
 import subprocess
 import sys
 
@@ -8,13 +9,19 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
-from app.main import Base, User, app, get_db, hash_password, _auth_attempts
+from app.main import Base, User, app, get_db, hash_password, _auth_attempts, totp_code
+import app.main as auth_module
+
+_TEST_EMAIL_OUTBOX = []
 
 
 @pytest.fixture
-def client():
-    # Reset process-local auth throttles between isolated test clients.
+def client(monkeypatch):
+    # Isolate throttles and capture mail without contacting an SMTP server.
     _auth_attempts.clear()
+    _TEST_EMAIL_OUTBOX.clear()
+    monkeypatch.setattr(auth_module, "smtp_ready", lambda: True)
+    monkeypatch.setattr(auth_module, "send_auth_email", lambda recipient, subject, body: _TEST_EMAIL_OUTBOX.append(body))
     engine = create_engine(
         "sqlite://",
         connect_args={"check_same_thread": False},
@@ -54,7 +61,14 @@ def register(client, email, name):
         "password": "strong-test-password",
     })
     assert response.status_code == 201, response.text
-    return response.json()["access_token"]
+    assert response.json()["verification_required"] is True
+    body = _TEST_EMAIL_OUTBOX[-1]
+    token = re.search(r"verify=([A-Za-z0-9_-]+)", body).group(1)
+    verified = client.post("/api/v1/auth/verify-email", json={"token": token})
+    assert verified.status_code == 200, verified.text
+    login = client.post("/api/v1/auth/login", json={"email": email, "password": "strong-test-password"})
+    assert login.status_code == 200, login.text
+    return login.json()["access_token"]
 
 
 def test_campaign_task_and_worker_submission_lifecycle(client):
@@ -398,3 +412,60 @@ def test_production_rejects_insecure_cors_origins():
     )
     assert result.returncode != 0
     assert "exact HTTPS frontend origin" in result.stderr
+
+
+
+def test_email_verification_password_reset_and_session_revocation(client):
+    blocked = client.post("/api/v1/auth/register", json={
+        "email": "reset-user@example.com", "display_name": "Reset User",
+        "password": "strong-test-password"
+    })
+    assert blocked.status_code == 201
+    body = _TEST_EMAIL_OUTBOX[-1]
+    verify_token = re.search(r"verify=([A-Za-z0-9_-]+)", body).group(1)
+    unverified_login = client.post("/api/v1/auth/login", json={
+        "email": "reset-user@example.com", "password": "strong-test-password"
+    })
+    assert unverified_login.status_code == 403
+    assert client.post("/api/v1/auth/verify-email", json={"token": verify_token}).status_code == 200
+    assert client.post("/api/v1/auth/verify-email", json={"token": verify_token}).status_code == 400
+
+    login = client.post("/api/v1/auth/login", json={
+        "email": "reset-user@example.com", "password": "strong-test-password"
+    })
+    old_token = login.json()["access_token"]
+    assert client.post("/api/v1/auth/forgot-password", json={"email": "reset-user@example.com"}).status_code == 200
+    reset_body = _TEST_EMAIL_OUTBOX[-1]
+    reset_token = re.search(r"reset=([A-Za-z0-9_-]+)", reset_body).group(1)
+    reset = client.post("/api/v1/auth/reset-password", json={
+        "token": reset_token, "password": "a-different-strong-password"
+    })
+    assert reset.status_code == 200
+    assert client.get("/api/v1/me", headers={"Authorization": f"Bearer {old_token}"}).status_code == 401
+    assert client.post("/api/v1/auth/reset-password", json={
+        "token": reset_token, "password": "another-strong-password"
+    }).status_code == 400
+    assert client.post("/api/v1/auth/login", json={
+        "email": "reset-user@example.com", "password": "a-different-strong-password"
+    }).status_code == 200
+
+
+def test_admin_totp_mfa_enrollment_and_login_challenge(client):
+    login = client.post("/api/v1/auth/login", json={
+        "email": "admin@example.com", "password": "test-admin-password"
+    })
+    headers = {"Authorization": f"Bearer {login.json()['access_token']}"}
+    setup = client.post("/api/v1/auth/mfa/setup", headers=headers)
+    assert setup.status_code == 200
+    secret = setup.json()["secret"]
+    code = totp_code(secret)
+    enabled = client.post("/api/v1/auth/mfa/enable", headers=headers, json={"code": code})
+    assert enabled.status_code == 200
+    challenge = client.post("/api/v1/auth/login", json={
+        "email": "admin@example.com", "password": "test-admin-password"
+    })
+    assert challenge.status_code == 200 and challenge.json()["mfa_required"] is True
+    verified = client.post("/api/v1/auth/mfa/verify", json={
+        "challenge_token": challenge.json()["challenge_token"], "code": totp_code(secret)
+    })
+    assert verified.status_code == 200 and verified.json().get("access_token")
