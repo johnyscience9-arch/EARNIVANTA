@@ -8,11 +8,13 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
-from app.main import Base, User, app, get_db, hash_password
+from app.main import Base, User, app, get_db, hash_password, _auth_attempts
 
 
 @pytest.fixture
 def client():
+    # Reset process-local auth throttles between isolated test clients.
+    _auth_attempts.clear()
     engine = create_engine(
         "sqlite://",
         connect_args={"check_same_thread": False},
