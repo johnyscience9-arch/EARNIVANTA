@@ -454,7 +454,8 @@ async def security_middleware(request: Request, call_next):
     length = request.headers.get("content-length")
     if length and length.isdigit() and int(length) > 2_000_000:
         return apply_security_headers(JSONResponse(status_code=413, content={"detail": "Request body is too large"}), request)
-    limit = _AUTH_LIMITS.get(request.url.path)
+    # CORS preflight requests must reach CORSMiddleware; they are not auth attempts.
+    limit = _AUTH_LIMITS.get(request.url.path) if request.method != "OPTIONS" else None
     if limit:
         maximum, window = limit
         forwarded = request.headers.get("x-forwarded-for", "")
