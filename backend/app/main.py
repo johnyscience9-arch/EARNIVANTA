@@ -70,6 +70,7 @@ class User(Base):
     email_verified: Mapped[bool] = mapped_column(Boolean, default=True, server_default="true")
     mfa_secret: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
     mfa_enabled: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
+    mfa_recovery_hashes: Mapped[str] = mapped_column(Text, default="[]", server_default="[]")
     session_version: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
 
 
@@ -246,6 +247,9 @@ if "mfa_enabled" not in {c["name"] for c in inspect(engine).get_columns("users")
 if "session_version" not in {c["name"] for c in inspect(engine).get_columns("users")}:
     with engine.begin() as conn:
         conn.execute(text("ALTER TABLE users ADD COLUMN session_version INTEGER NOT NULL DEFAULT 0"))
+if "mfa_recovery_hashes" not in {c["name"] for c in inspect(engine).get_columns("users")}:
+    with engine.begin() as conn:
+        conn.execute(text("ALTER TABLE users ADD COLUMN mfa_recovery_hashes TEXT NOT NULL DEFAULT '[]'"))
 with engine.begin() as conn:
     conn.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS uq_users_referral_code ON users (referral_code)"))
 
@@ -761,8 +765,16 @@ def decode_mfa_challenge(token: str, db: Session) -> User:
 @app.post("/api/v1/auth/mfa/verify")
 def verify_mfa(data: dict, db: Session = Depends(get_db)):
     user = decode_mfa_challenge(str(data.get("challenge_token", "")), db)
-    if not valid_totp(user.mfa_secret or "", str(data.get("code", ""))):
-        raise HTTPException(status_code=401, detail="Invalid authentication code")
+    code = str(data.get("code", "")).strip()
+    if not valid_totp(user.mfa_secret or "", code):
+        recovery = json.loads(user.mfa_recovery_hashes or "[]")
+        digest = hashlib.sha256(code.encode()).hexdigest()
+        match = next((i for i, value in enumerate(recovery) if hmac.compare_digest(value, digest)), None)
+        if match is None:
+            raise HTTPException(status_code=401, detail="Invalid authentication or recovery code")
+        recovery.pop(match)
+        user.mfa_recovery_hashes = json.dumps(recovery)
+        db.commit()
     return {"access_token": create_token(user), "token_type": "bearer", "user": user_public(user)}
 
 
@@ -782,16 +794,27 @@ def enable_mfa(data: dict, admin: User = Depends(require_roles("admin")), db: Se
     if not admin.mfa_secret or not valid_totp(admin.mfa_secret, str(data.get("code", ""))):
         raise HTTPException(status_code=400, detail="Invalid authentication code")
     admin.mfa_enabled = True
+    recovery_codes = [secrets.token_hex(5).upper() for _ in range(8)]
+    admin.mfa_recovery_hashes = json.dumps([hashlib.sha256(code.encode()).hexdigest() for code in recovery_codes])
     db.commit()
-    return {"mfa_enabled": True, "message": "Admin MFA is now enabled."}
+    return {"mfa_enabled": True, "recovery_codes": recovery_codes,
+            "message": "Admin MFA is enabled. Save these one-time recovery codes offline; they are shown only once."}
 
 
 @app.post("/api/v1/auth/mfa/disable")
 def disable_mfa(data: dict, admin: User = Depends(require_roles("admin")), db: Session = Depends(get_db)):
-    if not admin.mfa_enabled or not verify_password(str(data.get("password", "")), admin.password_hash) or not valid_totp(admin.mfa_secret or "", str(data.get("code", ""))):
-        raise HTTPException(status_code=401, detail="Password or authentication code is incorrect")
+    code = str(data.get("code", "")).strip()
+    valid_code = valid_totp(admin.mfa_secret or "", code)
+    recovery = json.loads(admin.mfa_recovery_hashes or "[]")
+    digest = hashlib.sha256(code.encode()).hexdigest()
+    match = next((i for i, value in enumerate(recovery) if hmac.compare_digest(value, digest)), None)
+    if not admin.mfa_enabled or not verify_password(str(data.get("password", "")), admin.password_hash) or not (valid_code or match is not None):
+        raise HTTPException(status_code=401, detail="Password or authentication/recovery code is incorrect")
+    if match is not None:
+        recovery.pop(match)
     admin.mfa_enabled = False
     admin.mfa_secret = None
+    admin.mfa_recovery_hashes = "[]"
     db.commit()
     return {"mfa_enabled": False}
 
