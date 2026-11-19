@@ -54,11 +54,12 @@ def client(monkeypatch):
     engine.dispose()
 
 
-def register(client, email, name):
+def register(client, email, name, referral_code=None):
     response = client.post("/api/v1/auth/register", json={
         "email": email,
         "display_name": name,
         "password": "strong-test-password",
+        "referral_code": referral_code,
     })
     assert response.status_code == 201, response.text
     assert response.json()["verification_required"] is True
@@ -291,12 +292,8 @@ def test_verified_deposit_campaign_escrow_and_reward_credit(client):
     referrer_token = register(client, "referrer@example.com", "Referrer")
     referrer_headers = {"Authorization": f"Bearer {referrer_token}"}
     referrer_code = client.get("/api/v1/me", headers=referrer_headers).json()["referral_code"]
-    referred = client.post("/api/v1/auth/register", json={
-        "email": "escrow-worker@example.com", "display_name": "Escrow Worker",
-        "password": "strong-test-password", "referral_code": referrer_code,
-    })
-    assert referred.status_code == 201, referred.text
-    worker_headers = {"Authorization": f"Bearer {referred.json()['access_token']}"} 
+    referred_token = register(client, "escrow-worker@example.com", "Escrow Worker", referrer_code)
+    worker_headers = {"Authorization": f"Bearer {referred_token}"}
     assert client.post("/api/v1/admin/users/2/role?role=advertiser", headers=admin_headers).status_code == 200
     deposit = client.post("/api/v1/deposits", headers=advertiser_headers, json={
         "amount_minor": 12000, "method": "bkash", "payment_reference": "BKASH-VERIFY-12345"
