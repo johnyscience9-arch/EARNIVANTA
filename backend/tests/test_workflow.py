@@ -512,3 +512,19 @@ def test_cors_preflight_is_not_counted_as_auth_attempt(client):
         response = client.options("/api/v1/auth/login", headers=headers)
         assert response.status_code == 200, response.text
         assert response.headers.get("access-control-allow-origin") == "http://localhost:5500"
+
+
+
+def test_signup_fails_closed_without_smtp_and_reset_request_is_generic(client, monkeypatch):
+    monkeypatch.setattr(auth_module, "smtp_ready", lambda: False)
+    registration = client.post("/api/v1/auth/register", json={
+        "email": "no-mail@example.com", "display_name": "No Mail",
+        "password": "strong-test-password"
+    })
+    assert registration.status_code == 503
+    assert "no-mail@example.com" not in [u.email for u in []]
+
+    unknown = client.post("/api/v1/auth/forgot-password", json={"email": "unknown@example.com"})
+    known = client.post("/api/v1/auth/forgot-password", json={"email": "admin@example.com"})
+    assert unknown.status_code == known.status_code == 200
+    assert unknown.json() == known.json()
