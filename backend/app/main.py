@@ -707,10 +707,10 @@ def forgot_password(data: dict, db: Session = Depends(get_db)):
 
 @app.post("/api/v1/auth/reset-password")
 def reset_password(data: dict, db: Session = Depends(get_db)):
-    _, user = consume_auth_token(db, str(data.get("token", "")), "password_reset")
     password = str(data.get("password", ""))
     if len(password) < 10 or len(password) > 128:
         raise HTTPException(status_code=422, detail="Password must be 10–128 characters")
+    _, user = consume_auth_token(db, str(data.get("token", "")), "password_reset")
     user.password_hash = hash_password(password)
     user.session_version += 1
     db.execute(text("UPDATE auth_tokens SET used_at = :now WHERE user_id = :uid AND used_at IS NULL"),
