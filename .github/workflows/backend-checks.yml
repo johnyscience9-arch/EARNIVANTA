@@ -81,12 +81,12 @@ jobs:
           }
           status, headers, _ = request("/api/v1/auth/login", "OPTIONS", allowed)
           assert status == 200, f"Allowed CORS preflight failed: {status}"
-          assert headers.get("Access-Control-Allow-Origin") == allowed["Origin"], headers
+          assert headers.get("access-control-allow-origin") == allowed["Origin"], headers
 
           denied = dict(allowed, Origin="https://evil.example")
           status, headers, _ = request("/api/v1/auth/login", "OPTIONS", denied)
           assert status == 400, f"Unexpected disallowed-origin preflight status: {status}"
-          assert "Access-Control-Allow-Origin" not in headers, headers
+          assert "access-control-allow-origin" not in headers, headers
           def request_site():
               req = urllib.request.Request("https://earnivanta.pages.dev/", method="GET")
               with urllib.request.urlopen(req, timeout=30) as response:
