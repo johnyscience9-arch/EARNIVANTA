@@ -415,7 +415,15 @@ app.add_middleware(CORSMiddleware, allow_origins=origins, allow_credentials=Fals
 
 # Per-process emergency throttles for authentication endpoints. Keep this in addition
 # to an edge/WAF rate limit; requests are not shared across multiple app instances.
-_AUTH_LIMITS = {"/api/v1/auth/login": (8, 900), "/api/v1/auth/register": (5, 3600)}
+_AUTH_LIMITS = {
+    "/api/v1/auth/login": (8, 900),
+    "/api/v1/auth/register": (5, 3600),
+    "/api/v1/auth/forgot-password": (5, 3600),
+    "/api/v1/auth/resend-verification": (5, 3600),
+    "/api/v1/auth/verify-email": (10, 900),
+    "/api/v1/auth/reset-password": (5, 900),
+    "/api/v1/auth/mfa/verify": (8, 900),
+}
 _auth_attempts = defaultdict(deque)
 _auth_lock = threading.Lock()
 
@@ -733,7 +741,7 @@ def valid_totp(secret: str, code: str) -> bool:
     return any(hmac.compare_digest(totp_code(secret, now + drift * 30), code) for drift in (-1, 0, 1))
 
 
-def decode_mfa_challenge(token: str) -> User:
+def decode_mfa_challenge(token: str, db: Session) -> User:
     try:
         payload, signature = token.split(".")
         expected = b64(hmac.new(TOKEN_SECRET.encode(), payload.encode(), hashlib.sha256).digest())
@@ -742,18 +750,17 @@ def decode_mfa_challenge(token: str) -> User:
         claims = json.loads(base64.urlsafe_b64decode(payload + "=" * (-len(payload) % 4)))
         if claims.get("purpose") != "mfa" or int(claims["exp"]) <= int(time.time()):
             raise ValueError("expired")
-        with SessionLocal() as db:
-            user = db.get(User, int(claims["sub"]))
-            if not user or not user.active or user.role != "admin" or not user.mfa_enabled:
-                raise ValueError("user")
-            return user
+        user = db.get(User, int(claims["sub"]))
+        if not user or not user.active or user.role != "admin" or not user.mfa_enabled:
+            raise ValueError("user")
+        return user
     except Exception as exc:
         raise HTTPException(status_code=401, detail="Invalid or expired MFA challenge") from exc
 
 
 @app.post("/api/v1/auth/mfa/verify")
-def verify_mfa(data: dict):
-    user = decode_mfa_challenge(str(data.get("challenge_token", "")))
+def verify_mfa(data: dict, db: Session = Depends(get_db)):
+    user = decode_mfa_challenge(str(data.get("challenge_token", "")), db)
     if not valid_totp(user.mfa_secret or "", str(data.get("code", ""))):
         raise HTTPException(status_code=401, detail="Invalid authentication code")
     return {"access_token": create_token(user), "token_type": "bearer", "user": user_public(user)}
