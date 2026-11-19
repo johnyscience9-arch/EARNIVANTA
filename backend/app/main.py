@@ -6,8 +6,8 @@ import json
 import secrets
 import time
 import threading
-import smtplib
-from email.message import EmailMessage
+import urllib.request
+import urllib.error
 from collections import defaultdict, deque
 from datetime import datetime, timedelta, timezone
 from typing import Optional
@@ -542,6 +542,16 @@ def health():
     return {"ok": True, "service": "earnivanta-api", "version": "0.1.0"}
 
 
+@app.get("/api/v1/health/database")
+def database_health():
+    try:
+        with engine.connect() as connection:
+            connection.execute(text("SELECT 1"))
+        return {"ok": True, "database": "connected"}
+    except Exception:
+        raise HTTPException(status_code=503, detail="Database connection unavailable")
+
+
 @app.get("/api/v1/daily-headline")
 def get_daily_headline(db: Session = Depends(get_db)):
     item = db.get(DailyHeadline, 1)
@@ -630,30 +640,34 @@ def disable_payment_destination(destination_id: int, admin: User = Depends(requi
     return {"id": item.id, "active": False, "message": "Payment destination disabled"}
 
 
-def smtp_ready() -> bool:
-    return all(os.getenv(key, "").strip() for key in ("SMTP_HOST", "SMTP_USERNAME", "SMTP_PASSWORD", "SMTP_FROM_EMAIL"))
+def email_ready() -> bool:
+    return all(os.getenv(key, "").strip() for key in ("BREVO_API_KEY", "BREVO_SENDER_EMAIL"))
 
 
 def send_auth_email(recipient: str, subject: str, body: str) -> None:
-    host = os.getenv("SMTP_HOST", "").strip()
-    username = os.getenv("SMTP_USERNAME", "").strip()
-    password = os.getenv("SMTP_PASSWORD", "")
-    sender = os.getenv("SMTP_FROM_EMAIL", "").strip()
-    if not all((host, username, password, sender)):
+    api_key = os.getenv("BREVO_API_KEY", "").strip()
+    sender = os.getenv("BREVO_SENDER_EMAIL", "").strip()
+    sender_name = os.getenv("BREVO_SENDER_NAME", "EARNIVANTA").strip() or "EARNIVANTA"
+    if not api_key or not sender:
         raise HTTPException(status_code=503, detail="Email service is not configured yet. Please try again later.")
-    message = EmailMessage()
-    message["Subject"] = subject
-    message["From"] = f'{os.getenv("SMTP_FROM_NAME", "EARNIVANTA")} <{sender}>'
-    message["To"] = recipient
-    message.set_content(body)
+
+    payload = {
+        "sender": {"name": sender_name, "email": sender},
+        "to": [{"email": recipient}],
+        "subject": subject,
+        "textContent": body,
+    }
+    request = urllib.request.Request(
+        "https://api.brevo.com/v3/smtp/email",
+        data=json.dumps(payload).encode("utf-8"),
+        headers={"accept": "application/json", "api-key": api_key, "content-type": "application/json"},
+        method="POST",
+    )
     try:
-        with smtplib.SMTP(host, int(os.getenv("SMTP_PORT", "587")), timeout=15) as server:
-            server.ehlo()
-            server.starttls()
-            server.ehlo()
-            server.login(username, password)
-            server.send_message(message)
-    except Exception as exc:
+        with urllib.request.urlopen(request, timeout=20) as response:
+            if response.status not in (200, 201, 202):
+                raise HTTPException(status_code=503, detail="Email delivery failed. Please try again later.")
+    except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError) as exc:
         raise HTTPException(status_code=503, detail="Email delivery failed. Please try again later.") from exc
 
 
@@ -688,7 +702,7 @@ def auth_link(kind: str, raw: str) -> str:
 
 @app.post("/api/v1/auth/register", status_code=201)
 def register(data: RegisterInput, db: Session = Depends(get_db)):
-    if not smtp_ready():
+    if not email_ready():
         raise HTTPException(status_code=503, detail="Email verification is temporarily unavailable. Please try again later.")
     email = str(data.email).lower().strip()
     if db.scalar(select(User).where(User.email == email)):
@@ -724,7 +738,7 @@ def verify_email(data: dict, db: Session = Depends(get_db)):
 def resend_verification(data: dict, db: Session = Depends(get_db)):
     email = str(data.get("email", "")).lower().strip()
     user = db.scalar(select(User).where(User.email == email))
-    if user and user.active and not user.email_verified and smtp_ready():
+    if user and user.active and not user.email_verified and email_ready():
         try:
             raw = issue_auth_token(db, user, "verify_email", 30)
             send_auth_email(user.email, "Verify your EARNIVANTA account",
@@ -738,7 +752,7 @@ def resend_verification(data: dict, db: Session = Depends(get_db)):
 def forgot_password(data: dict, db: Session = Depends(get_db)):
     email = str(data.get("email", "")).lower().strip()
     user = db.scalar(select(User).where(User.email == email))
-    if user and user.active and user.email_verified and smtp_ready():
+    if user and user.active and user.email_verified and email_ready():
         try:
             raw = issue_auth_token(db, user, "password_reset", 30)
             send_auth_email(user.email, "Reset your EARNIVANTA password",
