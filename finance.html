@@ -14,7 +14,25 @@ const money=n=>"৳"+(Number(n||0)/100).toLocaleString("en-BD",{minimumFractionD
 function msg(s){$("toast").textContent=s;$("toast").classList.remove("hidden");setTimeout(()=>$("toast").classList.add("hidden"),4200)}
 function apiUrl(path){return base.replace(/\/$/,"")+path}
 async function call(path,method="GET",body){const r=await fetch(apiUrl(path),{method,headers:{"Content-Type":"application/json","Authorization":"Bearer "+token},...(body?{body:JSON.stringify(body)}:{})});const d=await r.json().catch(()=>({detail:"Invalid server response"}));if(!r.ok)throw Error(d.detail||("Request failed ("+r.status+")"));return d}
-$("loginBtn").onclick=async()=>{try{base=$("api").value.trim().replace(/\/$/,"");if(!/^https?:\/\//.test(base))throw Error("Enter the full API URL, including https://");const r=await fetch(apiUrl("/api/v1/auth/login"),{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({email:$("email").value,password:$("password").value})});const d=await r.json();if(!r.ok)throw Error(d.detail||"Login failed");token=d.access_token;profile=d.user;if(!["admin","finance"].includes(profile.role)){token="";throw Error("This control desk is for Admin/Finance accounts only.");}$("login").classList.add("hidden");$("desk").classList.remove("hidden");$("logout").classList.remove("hidden");$("who").textContent=profile.display_name+" / "+profile.role.toUpperCase();$("apiEdit").value=base;await load("overview");}catch(e){msg(e.message)}};
+async function completeAdminAuth(d){
+ if(d.mfa_setup_required){
+  const setup=await call("/api/v1/auth/mfa/initial-setup","POST",{setup_token:d.setup_token});
+  try{await navigator.clipboard.writeText(setup.secret);alert("ADMIN MFA REQUIRED\\n\\nAuthenticator secret copied. Add it manually to your authenticator app.\\n\\nSecret: "+setup.secret)}catch(_){alert("ADMIN MFA REQUIRED\\n\\nAdd this secret to your authenticator app:\\n"+setup.secret)}
+  const code=prompt("Enter the current 6-digit authenticator code to enable MFA:");
+  if(!code)throw Error("MFA setup was not completed. Sign in again to continue.");
+  const enabled=await call("/api/v1/auth/mfa/initial-enable","POST",{setup_token:d.setup_token,code:code.trim()});
+  try{await navigator.clipboard.writeText(enabled.recovery_codes.join("\\n"))}catch(_){}
+  alert("MFA enabled. Save these one-time recovery codes offline:\\n\\n"+enabled.recovery_codes.join("\\n"));
+  throw Error("Admin MFA enabled. Sign in again with your authenticator code.");
+ }
+ if(d.mfa_required){
+  const code=prompt("Enter your 6-digit authenticator code (or one-time recovery code):");
+  if(!code)throw Error("Authenticator code is required.");
+  return await call("/api/v1/auth/mfa/verify","POST",{challenge_token:d.challenge_token,code:code.trim()});
+ }
+ return d;
+}
+$("loginBtn").onclick=async()=>{try{base=$("api").value.trim().replace(/\/$/,"");if(!/^https?:\/\//.test(base))throw Error("Enter the full API URL, including https://");const r=await fetch(apiUrl("/api/v1/auth/login"),{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({email:$("email").value,password:$("password").value})});let d=await r.json();if(!r.ok)throw Error(d.detail||"Login failed");d=await completeAdminAuth(d);token=d.access_token;profile=d.user;if(!["admin","finance"].includes(profile.role)){token="";throw Error("This control desk is for Admin/Finance accounts only.");}$("login").classList.add("hidden");$("desk").classList.remove("hidden");$("logout").classList.remove("hidden");$("who").textContent=profile.display_name+" / "+profile.role.toUpperCase();$("apiEdit").value=base;await load("overview");}catch(e){msg(e.message)}};
 $("logout").onclick=()=>{token="";profile=null;$("desk").classList.add("hidden");$("login").classList.remove("hidden");$("logout").classList.add("hidden");$("who").textContent="";$("password").value=""};
 $("saveApi").onclick=()=>{const v=$("apiEdit").value.trim().replace(/\/$/,"");if(!/^https?:\/\//.test(v)){msg("Enter a valid API URL");return}base=v;$("api").value=v;msg("API URL updated for this session")};
 $("refresh").onclick=()=>load(document.querySelector("[data-tab].active")?.dataset.tab||"overview");
