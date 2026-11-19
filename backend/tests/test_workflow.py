@@ -522,7 +522,10 @@ def test_signup_fails_closed_without_smtp_and_reset_request_is_generic(client, m
         "password": "strong-test-password"
     })
     assert registration.status_code == 503
-    assert "no-mail@example.com" not in [u.email for u in []]
+    login = client.post("/api/v1/auth/login", json={
+        "email": "no-mail@example.com", "password": "strong-test-password"
+    })
+    assert login.status_code == 401
 
     unknown = client.post("/api/v1/auth/forgot-password", json={"email": "unknown@example.com"})
     known = client.post("/api/v1/auth/forgot-password", json={"email": "admin@example.com"})
