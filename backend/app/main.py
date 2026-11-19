@@ -583,7 +583,7 @@ def create_public_inquiry(data: PublicInquiryInput, db: Session = Depends(get_db
     db.add(inquiry)
     db.commit()
     db.refresh(inquiry)
-    return {"id": inquiry.id, "status": inquiry.status, "message": "Your project enquiry has been recorded. Our team will contact you."}
+    return {"id": inquiry.id, "status": inquiry.status, "received_at": inquiry.created_at.isoformat(), "message": "Your project enquiry has been recorded. Our team will contact you."}
 
 
 @app.get("/api/v1/admin/project-inquiries")
