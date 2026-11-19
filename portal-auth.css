@@ -1,0 +1,24 @@
+/* EARNIVANTA portal access screen — focused visual rebuild */
+body:has(#auth:not(.hidden)){min-height:100vh;background:radial-gradient(ellipse at 12% 18%,#f15a2420,transparent 36%),var(--bg)!important}
+#auth.auth{position:relative;max-width:560px;margin:clamp(36px,8vh,92px) auto 58px;padding:clamp(26px,5vw,48px);border:1px solid var(--line);border-top:5px solid #f15a24;background:var(--white);box-shadow:18px 18px 0 #f15a241c;border-radius:3px}
+#auth:before{content:"EARNIVANTA / ACCESS GATE";display:block;font:800 10px/1.4 ui-monospace,monospace;letter-spacing:2px;color:#f15a24;margin-bottom:20px}
+#auth .tag{display:inline-flex;align-items:center;gap:9px;color:#f15a24!important;font-size:10px;letter-spacing:2px}
+#auth .tag:before{content:"";width:24px;height:2px;background:#f15a24}
+#auth h1{font-size:clamp(40px,6vw,64px);line-height:.94;letter-spacing:-.075em;margin:18px 0 26px;max-width:460px}
+#auth .tabs{display:flex;gap:8px;margin:0 0 24px;padding:5px;background:var(--paper2);border:1px solid var(--line)}
+#auth .tabs button{flex:1;min-height:44px;border:1px solid transparent;background:transparent;color:var(--muted);font-size:10px;letter-spacing:1px}
+#auth .tabs button.active{background:#f15a24!important;border-color:#f15a24!important;color:white!important;box-shadow:0 5px 14px #f15a2430}
+#auth .field{margin:17px 0}
+#auth .field label{color:var(--muted);font-size:10px;letter-spacing:1.5px}
+#auth .field input{min-height:50px;padding:14px 15px;border:1px solid var(--line);border-radius:2px;background:var(--paper)!important;color:var(--ink)!important;outline:none;transition:border-color .2s,box-shadow .2s}
+#auth .field input:focus{border-color:#f15a24!important;box-shadow:0 0 0 3px #f15a241b}
+#auth #authSubmit{width:100%;min-height:52px;margin-top:10px;background:#f15a24!important;border:1px solid #f15a24!important;color:#fff!important;font-size:11px;letter-spacing:1.3px;box-shadow:5px 5px 0 #f15a2428}
+#auth #authSubmit:hover{transform:translateY(-2px);box-shadow:7px 7px 0 #f15a2435}
+#auth>p.muted{border-top:1px solid var(--line);padding-top:16px;margin-top:25px;font-size:11px!important;line-height:1.7}
+#setup.auth{border-top-color:#f15a24}
+body[data-theme=dark] #auth.auth{background:linear-gradient(145deg,#171b21,#101318)!important;border-color:#303640;box-shadow:18px 18px 0 #f15a2415}
+body[data-theme=dark] #auth .tabs{background:#0b0e12;border-color:#303640}
+body[data-theme=dark] #auth .field input{background:#0b0e12!important;border-color:#343b45!important}
+body[data-theme=dark] #auth>p.muted{border-color:#303640}
+body[data-theme=light] #auth.auth{background:#fff!important;box-shadow:18px 18px 0 #f15a2418}
+@media(max-width:600px){#auth.auth{margin:30px auto 42px;padding:25px 21px}#auth h1{font-size:44px}}
