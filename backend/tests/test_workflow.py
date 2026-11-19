@@ -17,10 +17,10 @@ _TEST_EMAIL_OUTBOX = []
 
 @pytest.fixture
 def client(monkeypatch):
-    # Isolate throttles and capture mail without contacting an SMTP server.
+    # Isolate throttles and capture mail without contacting an external email provider.
     _auth_attempts.clear()
     _TEST_EMAIL_OUTBOX.clear()
-    monkeypatch.setattr(auth_module, "smtp_ready", lambda: True)
+    monkeypatch.setattr(auth_module, "email_ready", lambda: True)
     monkeypatch.setattr(auth_module, "send_auth_email", lambda recipient, subject, body: _TEST_EMAIL_OUTBOX.append(body))
     engine = create_engine(
         "sqlite://",
@@ -515,8 +515,8 @@ def test_cors_preflight_is_not_counted_as_auth_attempt(client):
 
 
 
-def test_signup_fails_closed_without_smtp_and_reset_request_is_generic(client, monkeypatch):
-    monkeypatch.setattr(auth_module, "smtp_ready", lambda: False)
+def test_signup_fails_closed_without_email_provider_and_reset_request_is_generic(client, monkeypatch):
+    monkeypatch.setattr(auth_module, "email_ready", lambda: False)
     registration = client.post("/api/v1/auth/register", json={
         "email": "no-mail@example.com", "display_name": "No Mail",
         "password": "strong-test-password"
