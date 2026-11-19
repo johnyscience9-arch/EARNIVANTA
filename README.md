@@ -6,15 +6,23 @@ Earnivanta is a bilingual digital work and promotion platform prototype for genu
 
 ## Live services
 
-- Public website: https://johnyscience9-arch.github.io/EARNIVANTA/
-- Member portal: https://johnyscience9-arch.github.io/EARNIVANTA/portal.html
-- Finance console: https://johnyscience9-arch.github.io/EARNIVANTA/finance.html
-- Payment destination settings: https://johnyscience9-arch.github.io/EARNIVANTA/payment-settings.html
-- Add funds: https://johnyscience9-arch.github.io/EARNIVANTA/add-funds.html
+- Public website: https://earnivanta.pages.dev/
+- Member portal: https://earnivanta.pages.dev/portal.html
+- Finance console: https://earnivanta.pages.dev/finance.html
+- Payment destination settings: https://earnivanta.pages.dev/payment-settings.html
+- Add funds: https://earnivanta.pages.dev/add-funds.html
 - API health: https://earnivanta-api-ozq5.onrender.com/api/v1/health
-- API docs: https://earnivanta-api-ozq5.onrender.com/docs
+- Production API documentation: disabled (404) by design
 
 The frontend is deployed by GitHub Pages. The FastAPI backend is deployed on Render and connects to the Supabase PostgreSQL project. The member portal now has the live API base URL preconfigured; users do not need to enter it manually.
+
+## Production security notes
+
+- Production registration and password reset use single-use, 30-minute email tokens. Configure `SMTP_HOST`, `SMTP_PORT`, `SMTP_USERNAME`, `SMTP_PASSWORD`, and `SMTP_FROM_EMAIL` in Render before enabling new registrations and email delivery.
+- Production Admin and Finance accounts must enroll in authenticator-based MFA before receiving an access token. One-time recovery codes are shown at enrollment.
+- Public Supabase client roles have no direct table grants; row-level security is enabled on all 12 public tables.
+- API documentation endpoints are disabled in production.
+
 
 ## Repository map
 
