@@ -428,6 +428,8 @@ _AUTH_LIMITS = {
     "/api/v1/auth/verify-email": (10, 900),
     "/api/v1/auth/reset-password": (5, 900),
     "/api/v1/auth/mfa/verify": (8, 900),
+    "/api/v1/auth/mfa/initial-setup": (3, 3600),
+    "/api/v1/auth/mfa/initial-enable": (8, 900),
     "/api/v1/auth/mfa/setup": (3, 3600),
     "/api/v1/auth/mfa/enable": (8, 900),
     "/api/v1/auth/mfa/disable": (5, 900),
