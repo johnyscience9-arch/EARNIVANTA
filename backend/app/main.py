@@ -4,10 +4,14 @@ import hashlib
 import hmac
 import json
 import secrets
+import time
+import threading
+from collections import defaultdict, deque
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
-from fastapi import Depends, FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException, Request
+from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, EmailStr, Field
@@ -22,8 +26,8 @@ elif DATABASE_URL.startswith("postgresql://"):
     DATABASE_URL = "postgresql+psycopg://" + DATABASE_URL[len("postgresql://"):]
 TOKEN_SECRET = os.getenv("TOKEN_SECRET", "")
 TOKEN_TTL_HOURS = int(os.getenv("TOKEN_TTL_HOURS", "24"))
-if TOKEN_TTL_HOURS < 1 or TOKEN_TTL_HOURS > 720:
-    raise RuntimeError("TOKEN_TTL_HOURS must be between 1 and 720")
+if TOKEN_TTL_HOURS < 1 or TOKEN_TTL_HOURS > (24 if APP_ENV == "production" else 720):
+    raise RuntimeError("TOKEN_TTL_HOURS must be between 1 and 24 in production (720 in development)")
 if not TOKEN_SECRET:
     if APP_ENV == "production":
         raise RuntimeError("TOKEN_SECRET is required in production")
@@ -273,6 +277,8 @@ def verify_password(password: str, encoded: str) -> bool:
         return False
 
 
+DUMMY_PASSWORD_HASH = hash_password(secrets.token_urlsafe(32))
+
 def create_token(user: User) -> str:
     now = datetime.now(timezone.utc)
     header = b64(json.dumps({"alg": "HS256", "typ": "JWT"}, separators=(",", ":")).encode())
@@ -373,8 +379,45 @@ def payment_destination_public(item: PaymentDestination):
 
 
 app = FastAPI(title="Earnivanta API", version="0.1.0", description="Initial authentication and campaign foundation.")
-app.add_middleware(CORSMiddleware, allow_origins=origins, allow_credentials=True,
+app.add_middleware(CORSMiddleware, allow_origins=origins, allow_credentials=False,
                    allow_methods=["GET", "POST", "PUT", "PATCH", "OPTIONS"], allow_headers=["Authorization", "Content-Type"])
+
+# Per-process emergency throttles for authentication endpoints. Keep this in addition
+# to an edge/WAF rate limit; requests are not shared across multiple app instances.
+_AUTH_LIMITS = {"/api/v1/auth/login": (8, 900), "/api/v1/auth/register": (5, 3600)}
+_auth_attempts = defaultdict(deque)
+_auth_lock = threading.Lock()
+
+@app.middleware("http")
+async def security_middleware(request: Request, call_next):
+    length = request.headers.get("content-length")
+    if length and length.isdigit() and int(length) > 2_000_000:
+        return JSONResponse(status_code=413, content={"detail": "Request body is too large"})
+    limit = _AUTH_LIMITS.get(request.url.path)
+    if limit:
+        maximum, window = limit
+        client_ip = request.client.host if request.client else "unknown"
+        key = (request.url.path, client_ip)
+        now = time.monotonic()
+        with _auth_lock:
+            attempts = _auth_attempts[key]
+            while attempts and now - attempts[0] > window:
+                attempts.popleft()
+            if len(attempts) >= maximum:
+                retry_after = max(1, int(window - (now - attempts[0])))
+                response = JSONResponse(status_code=429, content={"detail": "Too many attempts. Please try again later."})
+                response.headers["Retry-After"] = str(retry_after)
+                return response
+            attempts.append(now)
+    response = await call_next(request)
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+    response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
+    response.headers["Cache-Control"] = "no-store"
+    if request.url.scheme == "https" or request.headers.get("x-forwarded-proto") == "https":
+        response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
+    return response
 
 
 
@@ -512,7 +555,10 @@ def register(data: RegisterInput, db: Session = Depends(get_db)):
 def login(data: LoginInput, db: Session = Depends(get_db)):
     email = str(data.email).lower().strip()
     user = db.scalar(select(User).where(User.email == email))
-    if not user or not verify_password(data.password, user.password_hash) or not user.active:
+    # Perform the same expensive password derivation for unknown emails to reduce timing-based enumeration.
+    encoded_hash = user.password_hash if user else DUMMY_PASSWORD_HASH
+    password_ok = verify_password(data.password, encoded_hash)
+    if not user or not password_ok or not user.active:
         raise HTTPException(status_code=401, detail="Email or password is incorrect")
     return {"access_token": create_token(user), "token_type": "bearer", "user": user_public(user)}
 
@@ -753,7 +799,7 @@ def list_submissions(staff: User = Depends(require_roles("admin", "reviewer")), 
 @app.post("/api/v1/admin/submissions/{submission_id}/review")
 def review_submission(submission_id: int, data: SubmissionReviewInput,
                       staff: User = Depends(require_roles("admin", "reviewer")), db: Session = Depends(get_db)):
-    submission = db.get(TaskSubmission, submission_id)
+    submission = db.scalar(select(TaskSubmission).where(TaskSubmission.id == submission_id).with_for_update())
     if not submission:
         raise HTTPException(status_code=404, detail="Submission not found")
     if submission.status != "pending_review":
@@ -992,16 +1038,16 @@ def withdrawal_queue(staff: User = Depends(require_roles("admin", "finance")), d
 
 @app.get("/api/v1/withdrawal-proof-feed")
 def withdrawal_proof_feed(db: Session = Depends(get_db)):
-    rows = db.scalars(select(Withdrawal).where(Withdrawal.status == "paid", Withdrawal.payout_proof_image.is_not(None)).order_by(Withdrawal.processed_at.desc()).limit(30)).all()
+    rows = db.scalars(select(Withdrawal).where(Withdrawal.status == "paid").order_by(Withdrawal.processed_at.desc()).limit(30)).all()
+    # Public social-proof feed must never expose transaction screenshots, references, or personal data.
     return [{"id": w.id, "amount_minor": w.amount_minor, "currency": w.currency,
-             "payout_proof_image": w.payout_proof_image,
-             "processed_at": w.processed_at.isoformat() if w.processed_at else None}
+             "status": "paid", "processed_at": w.processed_at.isoformat() if w.processed_at else None}
             for w in rows]
 
 @app.post("/api/v1/admin/withdrawals/{withdrawal_id}/process")
 def process_withdrawal(withdrawal_id: int, data: WithdrawalDecisionInput,
                        staff: User = Depends(require_roles("admin", "finance")), db: Session = Depends(get_db)):
-    withdrawal = db.get(Withdrawal, withdrawal_id)
+    withdrawal = db.scalar(select(Withdrawal).where(Withdrawal.id == withdrawal_id).with_for_update())
     if not withdrawal:
         raise HTTPException(status_code=404, detail="Withdrawal request not found")
     if withdrawal.status != "pending":
