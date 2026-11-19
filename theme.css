@@ -26,3 +26,13 @@ body[data-theme="dark"] hr,body[data-theme="dark"] footer{border-color:#292d32!i
 .ev-theme-switch:hover{border-color:#f15a24!important;transform:translateY(-1px)}
 body[data-theme="dark"] .ev-theme-switch{background:#171c22!important;border-color:#343a42!important;color:#fff!important}
 @media(max-width:640px){.ev-theme-switch{min-height:34px;padding:7px 10px!important;font-size:10px!important}.mast .tools,.top .row,.topright{gap:7px;flex-wrap:wrap}}
+
+/* Brand alignment: warm orange accents across every route, including wallet */
+body[data-theme="dark"] .brand-mark,body[data-theme="light"] .brand-mark{background:linear-gradient(135deg,#f15a24,#ff9b45)!important;box-shadow:0 8px 28px #f15a2440!important}
+body[data-theme="dark"] .form-panel:before,body[data-theme="light"] .form-panel:before{background:#f15a2425!important}
+body[data-theme="dark"] .card.selected,body[data-theme="light"] .card.selected{border-color:#f15a24!important;background:linear-gradient(145deg,#f15a2420,#ff9b450d)!important;box-shadow:inset 0 0 0 1px #f15a2433,0 10px 32px #f15a2415!important}
+body[data-theme="dark"] .note,body[data-theme="light"] .note{background:linear-gradient(100deg,#f15a2418,#ff9b450c)!important;border-color:#f15a2455!important}
+body[data-theme="dark"] .hero h1 span,body[data-theme="light"] .hero h1 span{background:linear-gradient(90deg,#fff 5%,#ffb16f 50%,#f15a24 100%);-webkit-background-clip:text;background-clip:text;color:transparent}
+body[data-theme="light"] .hero h1 span{background:linear-gradient(90deg,#191714 5%,#f15a24 65%,#c74316 100%);-webkit-background-clip:text;background-clip:text;color:transparent}
+body[data-theme="dark"] .logo-box{background:#fff!important}
+body[data-theme="dark"] .map{background-color:#141a1e}
