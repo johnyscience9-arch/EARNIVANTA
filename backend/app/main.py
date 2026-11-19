@@ -378,7 +378,7 @@ def payment_destination_public(item: PaymentDestination):
             "instructions": item.instructions, "active": item.active, "sort_order": item.sort_order}
 
 
-app = FastAPI(title="Earnivanta API", version="0.1.0", description="Initial authentication and campaign foundation.")
+app = FastAPI(title="Earnivanta API", version="0.1.0", description="Earnivanta API", docs_url=None if APP_ENV == "production" else "/docs", redoc_url=None if APP_ENV == "production" else "/redoc", openapi_url=None if APP_ENV == "production" else "/openapi.json")
 app.add_middleware(CORSMiddleware, allow_origins=origins, allow_credentials=False,
                    allow_methods=["GET", "POST", "PUT", "PATCH", "OPTIONS"], allow_headers=["Authorization", "Content-Type"])
 
