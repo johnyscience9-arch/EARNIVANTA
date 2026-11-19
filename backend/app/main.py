@@ -726,7 +726,7 @@ def login(data: LoginInput, db: Session = Depends(get_db)):
     if not user.email_verified:
         raise HTTPException(status_code=403, detail="Please verify your email before signing in.")
     if user.role == "admin" and user.mfa_enabled:
-        payload = b64(json.dumps({"sub": str(user.id), "purpose": "mfa", "exp": int((datetime.now(timezone.utc)+timedelta(minutes=5)).timestamp())}, separators=(",", ":")).encode())
+        payload = b64(json.dumps({"sub": str(user.id), "ver": user.session_version, "purpose": "mfa", "exp": int((datetime.now(timezone.utc)+timedelta(minutes=5)).timestamp())}, separators=(",", ":")).encode())
         signature = b64(hmac.new(TOKEN_SECRET.encode(), payload.encode(), hashlib.sha256).digest())
         return {"mfa_required": True, "challenge_token": payload + "." + signature}
     return {"access_token": create_token(user), "token_type": "bearer", "user": user_public(user)}
@@ -764,7 +764,7 @@ def decode_mfa_challenge(token: str, db: Session) -> User:
         if claims.get("purpose") != "mfa" or int(claims["exp"]) <= int(time.time()):
             raise ValueError("expired")
         user = db.get(User, int(claims["sub"]))
-        if not user or not user.active or user.role != "admin" or not user.mfa_enabled:
+        if not user or not user.active or user.role != "admin" or not user.mfa_enabled or int(claims.get("ver", -1)) != user.session_version:
             raise ValueError("user")
         return user
     except Exception as exc:
@@ -803,6 +803,7 @@ def enable_mfa(data: dict, admin: User = Depends(require_roles("admin")), db: Se
     if not admin.mfa_secret or not valid_totp(admin.mfa_secret, str(data.get("code", ""))):
         raise HTTPException(status_code=400, detail="Invalid authentication code")
     admin.mfa_enabled = True
+    admin.session_version += 1
     recovery_codes = [secrets.token_hex(5).upper() for _ in range(8)]
     admin.mfa_recovery_hashes = json.dumps([hashlib.sha256(code.encode()).hexdigest() for code in recovery_codes])
     db.commit()
@@ -822,6 +823,7 @@ def disable_mfa(data: dict, admin: User = Depends(require_roles("admin")), db: S
     if match is not None:
         recovery.pop(match)
     admin.mfa_enabled = False
+    admin.session_version += 1
     admin.mfa_secret = None
     admin.mfa_recovery_hashes = "[]"
     db.commit()
