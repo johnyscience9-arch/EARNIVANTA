@@ -729,11 +729,11 @@ def login(data: LoginInput, db: Session = Depends(get_db)):
         raise HTTPException(status_code=401, detail="Email or password is incorrect")
     if not user.email_verified:
         raise HTTPException(status_code=403, detail="Please verify your email before signing in.")
-    if user.role == "admin" and not user.mfa_enabled and ADMIN_MFA_REQUIRED:
+    if user.role in {"admin", "finance"} and not user.mfa_enabled and ADMIN_MFA_REQUIRED:
         payload = b64(json.dumps({"sub": str(user.id), "ver": user.session_version, "purpose": "mfa_setup", "exp": int((datetime.now(timezone.utc)+timedelta(minutes=10)).timestamp())}, separators=(",", ":")).encode())
         signature = b64(hmac.new(TOKEN_SECRET.encode(), payload.encode(), hashlib.sha256).digest())
         return {"mfa_setup_required": True, "setup_token": payload + "." + signature}
-    if user.role == "admin" and user.mfa_enabled:
+    if user.role in {"admin", "finance"} and user.mfa_enabled:
         payload = b64(json.dumps({"sub": str(user.id), "ver": user.session_version, "purpose": "mfa", "exp": int((datetime.now(timezone.utc)+timedelta(minutes=5)).timestamp())}, separators=(",", ":")).encode())
         signature = b64(hmac.new(TOKEN_SECRET.encode(), payload.encode(), hashlib.sha256).digest())
         return {"mfa_required": True, "challenge_token": payload + "." + signature}
@@ -772,7 +772,7 @@ def decode_mfa_challenge(token: str, db: Session) -> User:
         if claims.get("purpose") != "mfa" or int(claims["exp"]) <= int(time.time()):
             raise ValueError("expired")
         user = db.get(User, int(claims["sub"]))
-        if not user or not user.active or user.role != "admin" or not user.mfa_enabled or int(claims.get("ver", -1)) != user.session_version:
+        if not user or not user.active or user.role not in {"admin", "finance"} or not user.mfa_enabled or int(claims.get("ver", -1)) != user.session_version:
             raise ValueError("user")
         return user
     except Exception as exc:
@@ -789,7 +789,7 @@ def decode_mfa_setup(token: str, db: Session) -> User:
         if claims.get("purpose") != "mfa_setup" or int(claims["exp"]) <= int(time.time()):
             raise ValueError("expired")
         user = db.get(User, int(claims["sub"]))
-        if not user or not user.active or user.role != "admin" or user.mfa_enabled or int(claims.get("ver", -1)) != user.session_version:
+        if not user or not user.active or user.role not in {"admin", "finance"} or user.mfa_enabled or int(claims.get("ver", -1)) != user.session_version:
             raise ValueError("user")
         return user
     except Exception as exc:
