@@ -4,12 +4,14 @@ import hashlib
 import hmac
 import json
 import secrets
+import smtplib
 import time
 import threading
 import urllib.request
 import urllib.error
 from collections import defaultdict, deque
 from datetime import datetime, timedelta, timezone
+from email.message import EmailMessage
 from typing import Optional
 
 from fastapi import Depends, FastAPI, HTTPException, Request
@@ -641,33 +643,67 @@ def disable_payment_destination(destination_id: int, admin: User = Depends(requi
 
 
 def email_ready() -> bool:
-    return all(os.getenv(key, "").strip() for key in ("BREVO_API_KEY", "BREVO_SENDER_EMAIL"))
+    # Support both Brevo's HTTP API and the SMTP variables documented in .env.example.
+    brevo_ready = all(os.getenv(key, "").strip() for key in ("BREVO_API_KEY", "BREVO_SENDER_EMAIL"))
+    smtp_ready = all(os.getenv(key, "").strip() for key in ("SMTP_HOST", "SMTP_USERNAME", "SMTP_PASSWORD", "SMTP_FROM_EMAIL"))
+    return brevo_ready or smtp_ready
 
 
 def send_auth_email(recipient: str, subject: str, body: str) -> None:
     api_key = os.getenv("BREVO_API_KEY", "").strip()
     sender = os.getenv("BREVO_SENDER_EMAIL", "").strip()
-    sender_name = os.getenv("BREVO_SENDER_NAME", "EARNIVANTA").strip() or "EARNIVANTA"
-    if not api_key or not sender:
+    sender_name = os.getenv("BREVO_SENDER_NAME", os.getenv("SMTP_FROM_NAME", "EARNIVANTA")).strip() or "EARNIVANTA"
+
+    # Prefer Brevo's transactional-email API when its credentials are present.
+    if api_key and sender:
+        payload = {
+            "sender": {"name": sender_name, "email": sender},
+            "to": [{"email": recipient}],
+            "subject": subject,
+            "textContent": body,
+        }
+        request = urllib.request.Request(
+            "https://api.brevo.com/v3/smtp/email",
+            data=json.dumps(payload).encode("utf-8"),
+            headers={"accept": "application/json", "api-key": api_key, "content-type": "application/json"},
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=20) as response:
+                if response.status not in (200, 201, 202):
+                    raise HTTPException(status_code=503, detail="Email delivery failed. Please try again later.")
+            return
+        except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError) as exc:
+            raise HTTPException(status_code=503, detail="Email delivery failed. Please try again later.") from exc
+
+    # SMTP fallback matches the SMTP_* settings already documented for deployment.
+    host = os.getenv("SMTP_HOST", "").strip()
+    username = os.getenv("SMTP_USERNAME", "").strip()
+    password = os.getenv("SMTP_PASSWORD", "").strip()
+    smtp_sender = os.getenv("SMTP_FROM_EMAIL", "").strip()
+    if not all((host, username, password, smtp_sender)):
         raise HTTPException(status_code=503, detail="Email service is not configured yet. Please try again later.")
 
-    payload = {
-        "sender": {"name": sender_name, "email": sender},
-        "to": [{"email": recipient}],
-        "subject": subject,
-        "textContent": body,
-    }
-    request = urllib.request.Request(
-        "https://api.brevo.com/v3/smtp/email",
-        data=json.dumps(payload).encode("utf-8"),
-        headers={"accept": "application/json", "api-key": api_key, "content-type": "application/json"},
-        method="POST",
-    )
+    message = EmailMessage()
+    message["Subject"] = subject
+    message["From"] = f"{sender_name} <{smtp_sender}>"
+    message["To"] = recipient
+    message.set_content(body)
     try:
-        with urllib.request.urlopen(request, timeout=20) as response:
-            if response.status not in (200, 201, 202):
-                raise HTTPException(status_code=503, detail="Email delivery failed. Please try again later.")
-    except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError) as exc:
+        port = int(os.getenv("SMTP_PORT", "587"))
+        if port == 465:
+            with smtplib.SMTP_SSL(host, port, timeout=20) as server:
+                server.login(username, password)
+                server.send_message(message)
+        else:
+            with smtplib.SMTP(host, port, timeout=20) as server:
+                server.ehlo()
+                if server.has_extn("starttls"):
+                    server.starttls()
+                    server.ehlo()
+                server.login(username, password)
+                server.send_message(message)
+    except (OSError, smtplib.SMTPException, ValueError) as exc:
         raise HTTPException(status_code=503, detail="Email delivery failed. Please try again later.") from exc
 
 
