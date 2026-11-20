@@ -71,4 +71,20 @@ jobs:
           for route in ["/api/v1/auth/register", "/api/v1/auth/login", "/api/v1/tasks", "/api/v1/wallet", "/api/v1/admin/review-queue"]:
               assert route in portal, f"Portal missing API route {route}"
           print("Homepage-to-portal links and key API route references OK")
+
+      - name: Smoke-test live API and browser CORS preflight
+        shell: bash
+        run: |
+          set -euo pipefail
+          API="https://earnivanta-api-ozq5.onrender.com"
+          curl --fail --silent --show-error --retry 5 --retry-delay 5 --retry-connrefused --max-time 90 "$API/api/v1/health" | grep -q '"ok":true'
+          headers="$(mktemp)"
+          trap 'rm -f "$headers"' EXIT
+          curl --fail --silent --show-error --retry 3 --retry-delay 3 --retry-connrefused --max-time 90 -X OPTIONS "$API/api/v1/auth/register" -D "$headers" -o /dev/null \
+            -H "Origin: https://earnivanta.pages.dev" \
+            -H "Access-Control-Request-Method: POST" \
+            -H "Access-Control-Request-Headers: content-type"
+          grep -iqF "access-control-allow-origin: https://earnivanta.pages.dev" "$headers"
+          grep -iqF "access-control-allow-methods:" "$headers"
+          echo "Live API health and EARNIVANTA portal CORS preflight passed."
           PY
