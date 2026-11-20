@@ -71,6 +71,7 @@ jobs:
           for route in ["/api/v1/auth/register", "/api/v1/auth/login", "/api/v1/tasks", "/api/v1/wallet", "/api/v1/admin/review-queue"]:
               assert route in portal, f"Portal missing API route {route}"
           print("Homepage-to-portal links and key API route references OK")
+          PY
 
       - name: Smoke-test live API and browser CORS preflight
         shell: bash
@@ -87,4 +88,3 @@ jobs:
           grep -iqF "access-control-allow-origin: https://earnivanta.pages.dev" "$headers"
           grep -iqF "access-control-allow-methods:" "$headers"
           echo "Live API health and EARNIVANTA portal CORS preflight passed."
-          PY
