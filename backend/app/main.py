@@ -698,9 +698,10 @@ def send_auth_email(recipient: str, subject: str, body: str) -> None:
         else:
             with smtplib.SMTP(host, port, timeout=20) as server:
                 server.ehlo()
-                if server.has_extn("starttls"):
-                    server.starttls()
-                    server.ehlo()
+                if not server.has_extn("starttls"):
+                    raise smtplib.SMTPNotSupportedError("SMTP server does not support required STARTTLS encryption")
+                server.starttls()
+                server.ehlo()
                 server.login(username, password)
                 server.send_message(message)
     except (OSError, smtplib.SMTPException, ValueError) as exc:
