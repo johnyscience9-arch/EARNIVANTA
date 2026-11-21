@@ -202,6 +202,15 @@ def test_wallet_ledger_and_manual_withdrawal_lifecycle(client):
     worker_token = register(client, "wallet-worker@example.com", "Wallet Worker")
     worker_headers = {"Authorization": f"Bearer {worker_token}"}
 
+    profile = client.get("/api/v1/me", headers=worker_headers)
+    assert profile.status_code == 200
+    assert profile.json()["email_verified"] is True
+    updated_profile = client.patch("/api/v1/me", headers=worker_headers, json={
+        "display_name": "Wallet Worker Updated", "phone_number": "01712345678"
+    })
+    assert updated_profile.status_code == 200, updated_profile.text
+    assert updated_profile.json()["phone_number"] == "01712345678"
+
     initial = client.get("/api/v1/wallet", headers=worker_headers)
     assert initial.status_code == 200
     assert initial.json()["available_minor"] == 0
@@ -224,10 +233,10 @@ def test_wallet_ledger_and_manual_withdrawal_lifecycle(client):
     })
     assert duplicate_reference.status_code == 409
 
-    insufficient = client.post("/api/v1/withdrawals", headers=worker_headers, json={"amount_minor": 16000})
+    insufficient = client.post("/api/v1/withdrawals", headers=worker_headers, json={"amount_minor": 16000, "payout_method": "bKash", "payout_number": "01712345678"})
     assert insufficient.status_code == 409
 
-    first_request = client.post("/api/v1/withdrawals", headers=worker_headers, json={"amount_minor": 10000})
+    first_request = client.post("/api/v1/withdrawals", headers=worker_headers, json={"amount_minor": 10000, "payout_method": "Nagad", "payout_number": "01712345678"})
     assert first_request.status_code == 201, first_request.text
     withdrawal_id = first_request.json()["id"]
     after_hold = client.get("/api/v1/wallet", headers=worker_headers)
@@ -235,7 +244,9 @@ def test_wallet_ledger_and_manual_withdrawal_lifecycle(client):
 
     queue = client.get("/api/v1/admin/withdrawals", headers=admin_headers)
     assert queue.status_code == 200
-    assert any(item["id"] == withdrawal_id for item in queue.json())
+    queued_item = next(item for item in queue.json() if item["id"] == withdrawal_id)
+    assert queued_item["payout_method"] == "Nagad"
+    assert queued_item["payout_number"] == "01712345678"
 
     rejected = client.post(
         f"/api/v1/admin/withdrawals/{withdrawal_id}/process",
@@ -246,7 +257,7 @@ def test_wallet_ledger_and_manual_withdrawal_lifecycle(client):
     after_release = client.get("/api/v1/wallet", headers=worker_headers)
     assert after_release.json()["available_minor"] == 15000
 
-    second_request = client.post("/api/v1/withdrawals", headers=worker_headers, json={"amount_minor": 15000})
+    second_request = client.post("/api/v1/withdrawals", headers=worker_headers, json={"amount_minor": 15000, "payout_method": "bKash", "payout_number": "01812345678"})
     assert second_request.status_code == 201
     paid_id = second_request.json()["id"]
     paid = client.post(
@@ -275,6 +286,8 @@ def test_wallet_ledger_and_manual_withdrawal_lifecycle(client):
     own_withdrawals = client.get("/api/v1/withdrawals", headers=worker_headers)
     assert own_withdrawals.status_code == 200
     assert [item["status"] for item in own_withdrawals.json()] == ["paid", "rejected"]
+    assert own_withdrawals.json()[0]["payout_method"] == "bKash"
+    assert own_withdrawals.json()[1]["payout_method"] == "Nagad"
 
 
 def test_verified_deposit_campaign_escrow_and_reward_credit(client):
