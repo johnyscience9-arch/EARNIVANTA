@@ -1,4 +1,5 @@
 import os
+import re
 import base64
 import hashlib
 import hmac
@@ -74,6 +75,7 @@ class User(Base):
     mfa_secret: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
     mfa_enabled: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
     mfa_recovery_hashes: Mapped[str] = mapped_column(Text, default="[]", server_default="[]")
+    phone_number: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
     session_version: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
 
 
@@ -198,6 +200,8 @@ class Withdrawal(Base):
     status: Mapped[str] = mapped_column(String(24), default="pending")
     payout_reference: Mapped[Optional[str]] = mapped_column(String(120), nullable=True)
     payout_proof_image: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    payout_method: Mapped[Optional[str]] = mapped_column(String(24), nullable=True)
+    payout_number: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
     staff_note: Mapped[Optional[str]] = mapped_column(String(1000), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
     processed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
@@ -280,6 +284,15 @@ if "client_charge_minor" not in {c["name"] for c in inspect(engine).get_columns(
 if "payout_proof_image" not in {c["name"] for c in inspect(engine).get_columns("withdrawals")}:
     with engine.begin() as conn:
         conn.execute(text("ALTER TABLE withdrawals ADD COLUMN payout_proof_image TEXT"))
+if "phone_number" not in {c["name"] for c in inspect(engine).get_columns("users")}:
+    with engine.begin() as conn:
+        conn.execute(text("ALTER TABLE users ADD COLUMN phone_number VARCHAR(20)"))
+if "payout_method" not in {c["name"] for c in inspect(engine).get_columns("withdrawals")}:
+    with engine.begin() as conn:
+        conn.execute(text("ALTER TABLE withdrawals ADD COLUMN payout_method VARCHAR(24)"))
+if "payout_number" not in {c["name"] for c in inspect(engine).get_columns("withdrawals")}:
+    with engine.begin() as conn:
+        conn.execute(text("ALTER TABLE withdrawals ADD COLUMN payout_number VARCHAR(32)"))
 
 
 with SessionLocal() as db:
@@ -837,7 +850,7 @@ def login(data: LoginInput, db: Session = Depends(get_db)):
 def user_public(user: User):
     return {"id": user.id, "email": user.email, "display_name": user.display_name, "role": user.role,
             "active": user.active, "referral_code": user.referral_code, "email_verified": user.email_verified,
-            "mfa_enabled": user.mfa_enabled}
+            "mfa_enabled": user.mfa_enabled, "phone_number": user.phone_number}
 
 
 def totp_code(secret: str, timestamp=None) -> str:
@@ -977,6 +990,23 @@ def disable_mfa(data: dict, admin: User = Depends(require_roles("admin")), db: S
 
 @app.get("/api/v1/me")
 def me(user: User = Depends(current_user)):
+    return user_public(user)
+
+
+class ProfileUpdateInput(BaseModel):
+    display_name: str = Field(min_length=2, max_length=80)
+    phone_number: Optional[str] = Field(default=None, max_length=20)
+
+
+@app.patch("/api/v1/me")
+def update_my_profile(data: ProfileUpdateInput, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    phone = (data.phone_number or "").strip()
+    if phone and not re.fullmatch(r"01[3-9][0-9]{8}", phone):
+        raise HTTPException(status_code=422, detail="Enter a valid Bangladesh mobile number (01XXXXXXXXX)")
+    user.display_name = data.display_name.strip()
+    user.phone_number = phone or None
+    db.commit()
+    db.refresh(user)
     return user_public(user)
 
 
@@ -1339,6 +1369,8 @@ def campaign_budget(campaign_id: int, user: User = Depends(current_user), db: Se
 
 class WithdrawalInput(BaseModel):
     amount_minor: int = Field(gt=0, le=100_000_000)
+    payout_method: str = Field(pattern="^(bKash|Nagad|Rocket|Upay)$")
+    payout_number: str = Field(min_length=11, max_length=11)
 
 
 class WalletAdjustmentInput(BaseModel):
@@ -1391,12 +1423,14 @@ def wallet_transactions(user: User = Depends(current_user), db: Session = Depend
 
 @app.post("/api/v1/withdrawals", status_code=201)
 def request_withdrawal(data: WithdrawalInput, user: User = Depends(require_roles("member", "maintenance")), db: Session = Depends(get_db)):
+    if not re.fullmatch(r"01[3-9][0-9]{8}", data.payout_number):
+        raise HTTPException(status_code=422, detail="Enter a valid Bangladesh mobile number (01XXXXXXXXX)")
     # Serialize balance checks on databases that support row-level locks (e.g. PostgreSQL).
     db.scalar(select(User).where(User.id == user.id).with_for_update())
     totals = wallet_totals(db, user.id)
     if totals["available_minor"] < data.amount_minor:
         raise HTTPException(status_code=409, detail="Insufficient available balance")
-    withdrawal = Withdrawal(user_id=user.id, amount_minor=data.amount_minor)
+    withdrawal = Withdrawal(user_id=user.id, amount_minor=data.amount_minor, payout_method=data.payout_method, payout_number=data.payout_number)
     db.add(withdrawal)
     db.flush()
     db.add(WalletEntry(user_id=user.id, entry_type="hold", amount_minor=data.amount_minor,
@@ -1405,7 +1439,7 @@ def request_withdrawal(data: WithdrawalInput, user: User = Depends(require_roles
     db.commit()
     db.refresh(withdrawal)
     return {"id": withdrawal.id, "amount_minor": withdrawal.amount_minor, "currency": withdrawal.currency,
-            "status": withdrawal.status, "message": "Withdrawal request submitted; funds are reserved pending manual review"}
+            "status": withdrawal.status, "payout_method": withdrawal.payout_method, "payout_number": withdrawal.payout_number, "message": "Withdrawal request submitted; funds are reserved pending manual review"}
 
 
 @app.get("/api/v1/withdrawals")
@@ -1414,6 +1448,7 @@ def my_withdrawals(user: User = Depends(current_user), db: Session = Depends(get
     return [{"id": w.id, "amount_minor": w.amount_minor, "currency": w.currency, "status": w.status,
              "staff_note": w.staff_note, "payout_reference": w.payout_reference if w.status == "paid" else None,
              "payout_proof_image": w.payout_proof_image if w.status == "paid" else None,
+             "payout_method": w.payout_method, "payout_number": w.payout_number,
              "created_at": w.created_at.isoformat(), "processed_at": w.processed_at.isoformat() if w.processed_at else None} for w in rows]
 
 
@@ -1440,7 +1475,8 @@ def withdrawal_queue(staff: User = Depends(require_roles("admin", "finance")), d
     rows = db.execute(select(Withdrawal, User).join(User, Withdrawal.user_id == User.id)
                       .where(Withdrawal.status == "pending").order_by(Withdrawal.id.asc())).all()
     return [{"id": w.id, "user_id": u.id, "user_name": u.display_name, "amount_minor": w.amount_minor,
-             "currency": w.currency, "status": w.status, "created_at": w.created_at.isoformat()} for w, u in rows]
+             "currency": w.currency, "status": w.status, "payout_method": w.payout_method, "payout_number": w.payout_number,
+             "created_at": w.created_at.isoformat()} for w, u in rows]
 
 
 
