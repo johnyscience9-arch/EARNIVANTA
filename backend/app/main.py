@@ -1091,6 +1091,23 @@ def admin_feature_requests(admin: User = Depends(require_roles("admin")), db: Se
              "created_at": x.created_at.isoformat()} for x, u in rows]
 
 
+class FeatureRequestReviewInput(BaseModel):
+    decision: str = Field(pattern="^(approve|reject)$")
+
+
+@app.post("/api/v1/admin/feature-requests/{request_id}/review")
+def review_feature_request(request_id: int, data: FeatureRequestReviewInput,
+                           admin: User = Depends(require_roles("admin")), db: Session = Depends(get_db)):
+    item = db.scalar(select(FeatureRequest).where(FeatureRequest.id == request_id).with_for_update())
+    if not item:
+        raise HTTPException(status_code=404, detail="Feature request not found")
+    if item.status != "requested":
+        raise HTTPException(status_code=409, detail="Feature request has already been reviewed")
+    item.status = "approved" if data.decision == "approve" else "rejected"
+    db.commit()
+    return {"id": item.id, "status": item.status, "message": "Video work access request reviewed"}
+
+
 @app.get("/api/v1/tasks")
 def list_tasks(user: User = Depends(current_user), db: Session = Depends(get_db)):
     rows = db.execute(select(Task, Campaign).join(Campaign, Task.campaign_id == Campaign.id)
