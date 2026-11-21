@@ -5,6 +5,7 @@
     <application
         android:allowBackup="false"
         android:label="EARNIVANTA"
+        android:icon="@drawable/ic_launcher"
         android:usesCleartextTraffic="false"
         android:theme="@style/AppTheme"
         android:supportsRtl="true">
