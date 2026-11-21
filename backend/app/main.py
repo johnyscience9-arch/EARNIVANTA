@@ -231,6 +231,16 @@ class ProjectInquiry(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
 
+class FeatureRequest(Base):
+    __tablename__ = "feature_requests"
+    __table_args__ = (UniqueConstraint("user_id", "feature_key", name="uq_feature_request_user_key"),)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    feature_key: Mapped[str] = mapped_column(String(40))
+    status: Mapped[str] = mapped_column(String(24), default="requested", index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+
+
 class DailyHeadlineInput(BaseModel):
     headline: str = Field(min_length=3, max_length=180)
     body: str = Field(default="", max_length=1000)
@@ -1049,6 +1059,36 @@ def create_task(campaign_id: int, data: TaskInput, user: User = Depends(require_
     db.commit()
     db.refresh(task)
     return {"id": task.id, "campaign_id": task.campaign_id, "title": task.title, "category": task.category, "worker_reward_minor": task.reward_minor, "client_charge_minor": task.client_charge_minor, "commission_percent": commission, "status": task.status}
+
+
+@app.post("/api/v1/feature-requests/video-earning", status_code=201)
+def request_video_earning(user: User = Depends(current_user), db: Session = Depends(get_db)):
+    existing = db.scalar(select(FeatureRequest).where(
+        FeatureRequest.user_id == user.id,
+        FeatureRequest.feature_key == "video_earning"
+    ))
+    if existing:
+        return {"id": existing.id, "status": existing.status, "message": "Your request is already recorded."}
+    item = FeatureRequest(user_id=user.id, feature_key="video_earning", status="requested")
+    db.add(item)
+    db.commit()
+    db.refresh(item)
+    return {"id": item.id, "status": item.status, "message": "Video earning feature request recorded. This feature is not active yet."}
+
+
+@app.get("/api/v1/feature-requests/me")
+def my_feature_requests(user: User = Depends(current_user), db: Session = Depends(get_db)):
+    items = db.scalars(select(FeatureRequest).where(FeatureRequest.user_id == user.id)).all()
+    return [{"feature_key": x.feature_key, "status": x.status, "created_at": x.created_at.isoformat()} for x in items]
+
+
+@app.get("/api/v1/admin/feature-requests")
+def admin_feature_requests(admin: User = Depends(require_roles("admin")), db: Session = Depends(get_db)):
+    rows = db.execute(select(FeatureRequest, User).join(User, FeatureRequest.user_id == User.id)
+                      .order_by(FeatureRequest.created_at.desc()).limit(500)).all()
+    return [{"id": x.id, "feature_key": x.feature_key, "status": x.status,
+             "user_id": u.id, "user_name": u.display_name, "email": u.email,
+             "created_at": x.created_at.isoformat()} for x, u in rows]
 
 
 @app.get("/api/v1/tasks")
